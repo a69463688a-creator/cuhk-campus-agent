@@ -4,7 +4,7 @@
 文件名: facility_server.py
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/2/6
-描述: 校园设施查询 A2A Agent 服务器 —— 自习室/图书馆座位/校园活动（端口 5006）
+描述: 校园设施查询 A2A Agent 服务器 —— 校园活动/新闻/餐厅/图书馆开放时间（端口 5006）
 """
 import json
 import asyncio
@@ -32,39 +32,7 @@ llm = ChatOpenAI(
 
 
 # 数据表 schema
-table_schema_string = """  # 定义校园设施表的SQL schema字符串，用于Prompt上下文
-CREATE TABLE study_rooms (
-    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    building VARCHAR(80) NOT NULL COMMENT '教学楼名称',
-    room_number VARCHAR(20) NOT NULL COMMENT '教室编号',
-    room_date DATE NOT NULL COMMENT '开放日期',
-    start_time TIME NOT NULL COMMENT '开放开始时间',
-    end_time TIME NOT NULL COMMENT '开放结束时间',
-    capacity INT NOT NULL COMMENT '总座位数',
-    available_seats INT NOT NULL COMMENT '剩余可用座位',
-    has_projector TINYINT DEFAULT 0 COMMENT '是否有投影仪',
-    has_ac TINYINT DEFAULT 1 COMMENT '是否有空调',
-    status VARCHAR(20) DEFAULT 'available' COMMENT '状态',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_room (building, room_number, room_date, start_time)
-) COMMENT='自习室信息表';
-
--- 图书馆座位表
-CREATE TABLE library_seats (
-    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    library_name VARCHAR(80) NOT NULL COMMENT '图书馆名称',
-    floor INT NOT NULL COMMENT '楼层',
-    zone VARCHAR(40) NOT NULL COMMENT '区域',
-    seat_date DATE NOT NULL COMMENT '日期',
-    time_slot VARCHAR(20) NOT NULL COMMENT '时间段',
-    total_seats INT NOT NULL COMMENT '该区域总座位数',
-    available_seats INT NOT NULL COMMENT '剩余可用座位',
-    has_power TINYINT DEFAULT 1 COMMENT '是否有电源插座',
-    is_quiet_zone TINYINT DEFAULT 0 COMMENT '是否静音区',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_seat (library_name, floor, zone, seat_date, time_slot)
-) COMMENT='图书馆座位信息表';
-
+table_schema_string = """  # 定义校园信息表的SQL schema字符串，用于Prompt上下文
 -- 校园活动表
 CREATE TABLE campus_events (
     id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
@@ -80,49 +48,92 @@ CREATE TABLE campus_events (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_event (start_time, event_name, venue)
 ) COMMENT='校园活动信息表';
+
+-- 校园新闻表
+CREATE TABLE campus_news (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    title VARCHAR(200) NOT NULL COMMENT '新闻标题',
+    source VARCHAR(100) NOT NULL DEFAULT 'CUHK CPR' COMMENT '来源',
+    category VARCHAR(30) DEFAULT 'General' COMMENT '新闻类别',
+    publish_date DATETIME NOT NULL COMMENT '发布日期',
+    summary TEXT COMMENT '新闻摘要',
+    url VARCHAR(500) COMMENT '原文链接',
+    image_url VARCHAR(500) COMMENT '封面图URL',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_news (publish_date, title)
+) COMMENT='校园新闻表';
+
+-- 校园餐厅表
+CREATE TABLE canteen (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    name VARCHAR(80) NOT NULL COMMENT '餐厅名称',
+    location VARCHAR(100) NOT NULL COMMENT '所在位置/地址',
+    opening_hours VARCHAR(300) COMMENT '营业时间',
+    phone VARCHAR(50) COMMENT '联系电话',
+    category VARCHAR(30) DEFAULT 'Canteen' COMMENT '类别（Canteen/Cafe/Restaurant/Snack Bar）',
+    status VARCHAR(20) DEFAULT 'Open' COMMENT '营业状态（Open/Closed）',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_canteen (name, location)
+) COMMENT='校园餐厅信息表';
+
+-- 图书馆开放时间表
+CREATE TABLE library_hours (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    library_name VARCHAR(100) NOT NULL COMMENT '图书馆名称',
+    area VARCHAR(100) DEFAULT 'Main' COMMENT '区域（如 Main/ Learning Garden/ Staffed services）',
+    day_of_week VARCHAR(10) NOT NULL COMMENT '星期几（Mon/Tue/Wed/Thu/Fri/Sat/Sun）',
+    date DATE COMMENT '具体日期',
+    open_time VARCHAR(10) COMMENT '开门时间（如 09:00, 24hrs）',
+    close_time VARCHAR(10) COMMENT '关门时间',
+    is_closed TINYINT DEFAULT 0 COMMENT '是否闭馆',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_lib_hours (library_name, area, day_of_week, date)
+) COMMENT='图书馆开放时间表';
 """
 
 # 生成SQL的提示词
 sql_prompt = ChatPromptTemplate.from_template(
     """
-系统提示：你是一个专业的CUHK校园设施SQL生成器，需要从对话历史（含用户的问题）中提取用户的意图以及关键信息，然后基于study_rooms、library_seats、campus_events表生成SELECT语句。
+系统提示：你是一个专业的CUHK校园信息SQL生成器，需要从对话历史（含用户的问题）中提取用户的意图以及关键信息，然后基于 campus_events、campus_news、canteen、library_hours 表生成SELECT语句。
 根据对话历史：
-1. 提取用户的意图，意图有3种（study_room: 自习室, library_seat: 图书馆座位, campus_event: 校园活动），输出：{{"type": "study_room/library_seat/campus_event"}}；如果无法识别意图，或者意图不在这3种内，则模仿最后1个示例回复即可。
+1. 提取用户的意图，意图有4种（campus_event: 校园活动, campus_news: 校园新闻, canteen: 餐厅, library_hours: 图书馆开放时间），输出：{{"type": "campus_event/campus_news/canteen/library_hours"}}；如果无法识别意图，或者意图不在这4种内，则模仿最后1个示例回复即可。
 2. 根据用户的意图，生成对应表的 SELECT 语句，仅查询指定字段：
-- study_rooms: id, building, room_number, room_date, start_time, end_time, capacity, available_seats, has_projector, has_ac, status
-- library_seats: id, library_name, floor, zone, seat_date, time_slot, total_seats, available_seats, has_power, is_quiet_zone
 - campus_events: id, event_name, organizer, venue, start_time, end_time, category, total_capacity, registered, description
-3. 如果用户在查询设施信息时，缺少必要信息，则输出：{{"status": "input_required", "message": "请提供设施类型（如自习室、图书馆座位、校园活动）和必要信息（如教学楼、日期等）。"}} ，如示例所示；如果对话历史中信息齐全，则输出纯SQL即可。
+- campus_news: id, title, source, category, publish_date, summary, url
+- canteen: id, name, location, opening_hours, phone, category, status
+- library_hours: id, library_name, area, day_of_week, date, open_time, close_time, is_closed
+3. 如果用户在查询信息时，缺少必要信息，则输出：{{"status": "input_required", "message": "请提供更具体的查询条件。"}} ，如示例所示；如果对话历史中信息齐全，则输出纯SQL即可。
 其中，每种意图必要的信息有：
-- study_room: 【building (教学楼), room_date (日期)】
-- library_seat: library_name (图书馆名), seat_date (日期)。
 - campus_event: category (类别), start_time (日期范围)。
+- campus_news: 关键词或日期范围（可选，默认查最近新闻）。
+- canteen: 餐厅名称或位置关键词（可选，默认查全部）。
+- library_hours: library_name (图书馆名), day_of_week (星期几)（可选，默认查全部）。
 4. 按要求输出两行数据或一行数据即可，不需要输出其他内容。
 
-
 示例：
-- 对话: user: YIA教学楼 2026-08-10 自习室
-输出:
-{{"type": "study_room"}}
-SELECT id, building, room_number, room_date, start_time, end_time, capacity, available_seats, has_projector, has_ac, status FROM study_rooms WHERE building = 'Yasumoto International Academic Park' AND room_date = '2026-08-10'
-
-- 对话: user: University Library 2026-08-10 座位
-输出:
-{{"type": "library_seat"}}
-SELECT id, library_name, floor, zone, seat_date, time_slot, total_seats, available_seats, has_power, is_quiet_zone FROM library_seats WHERE library_name = 'University Library' AND seat_date = '2026-08-10'
-
-- 对话: user: 最近有什么校园活动 竞赛
+- 对话: user: 最近有什么校园活动 讲座
 输出:
 {{"type": "campus_event"}}
-SELECT id, event_name, organizer, venue, start_time, end_time, category, total_capacity, registered, description FROM campus_events WHERE category = 'Competition' AND start_time >= '2026-08-10'
+SELECT id, event_name, organizer, venue, start_time, end_time, category, total_capacity, registered, description FROM campus_events WHERE category = 'Talk' AND start_time >= '2026-08-10'
 
-- 对话: user: 自习室
+- 对话: user: 最近有什么新闻
 输出:
-{{"status": "input_required", "message": "请提供教学楼名称和日期，例如 'YIA教学楼 2026-08-10'。"}}
+{{"type": "campus_news"}}
+SELECT id, title, source, category, publish_date, summary, url FROM campus_news ORDER BY publish_date DESC LIMIT 10
+
+- 对话: user: 崇基学院有什么餐厅
+输出:
+{{"type": "canteen"}}
+SELECT id, name, location, opening_hours, phone, category, status FROM canteen WHERE location LIKE '%Chung Chi%' AND status = 'Open'
+
+- 对话: user: 大学图书馆今天几点开门
+输出:
+{{"type": "library_hours"}}
+SELECT id, library_name, area, day_of_week, date, open_time, close_time, is_closed FROM library_hours WHERE library_name LIKE '%University Library%'
 
 - 对话: user: 你好
 输出:
-{{"status": "input_required", "message": "请提供校园设施查询类型（自习室/图书馆座位/校园活动）和必要信息。"}}
+{{"status": "input_required", "message": "请提供校园信息查询类型（校园活动/新闻/餐厅/图书馆开放时间）和必要信息。"}}
 
 表结构：{table_schema_string}
 对话历史: {conversation}
@@ -155,16 +166,15 @@ async def get_facility_info(sql):
 # Agent 卡片定义
 agent_card = AgentCard(
     name="FacilityQueryAssistant",
-    description="基于 LangChain 提供CUHK校园设施查询服务的助手",
+    description="基于 LangChain 提供CUHK校园信息查询服务的助手",
     url="http://localhost:5006",
-    version="1.0.4",
+    version="2.0.0",
     capabilities={"streaming": True, "memory": True},
     skills=[
         AgentSkill(
-            name="execute facility query",
-            description="根据客户端提供的输入执行校园设施查询，返回数据库结果，支持自然语言输入",
-            examples=["YIA教学楼 2026-08-10 自习室", "University Library 明天 座位",
-                      "最近有什么CS相关的校园活动"]
+            name="execute campus query",
+            description="根据客户端提供的输入执行校园信息查询，返回数据库结果，支持自然语言输入",
+            examples=["最近有什么讲座", "校园新闻", "崇基学院餐厅", "大学图书馆开放时间"]
         )
     ]
 )
@@ -210,7 +220,7 @@ class FacilityQueryServer(A2AServer):
                 return {"status": "input_required", "message": "无法解析查询类型或SQL，请提供更明确的信息。"}  # 返回默认追问
         except Exception as e:
             logger.error(f"SQL 生成失败: {str(e)}")
-            return {"status": "input_required", "message": "查询无效，请提供查询校园设施的相关信息。"}  # 返回追问JSON
+            return {"status": "input_required", "message": "查询无效，请提供查询校园信息的相关信息。"}  # 返回追问JSON
 
     # 处理任务：提取输入，生成SQL，调用MCP，格式化结果
     def handle_task(self, task):
@@ -245,12 +255,19 @@ class FacilityQueryServer(A2AServer):
                 data = response.get("data", [])  # 提取数据列表
                 response_text = ""  # 初始化响应文本
                 for d in data:  # 遍历每个数据项
-                    if query_type == "study_room":  # 自习室类型
-                        response_text += f"{d['building']} {d['room_number']} | {d['room_date']} {d['start_time']}-{d['end_time']} | 可用:{d['available_seats']}/{d['capacity']} | 投影仪:{'有' if d['has_projector'] else '无'} | 空调:{'有' if d['has_ac'] else '无'} | 状态:{d['status']}\n"
-                    elif query_type == "library_seat":  # 图书馆座位类型
-                        response_text += f"{d['library_name']} F{d['floor']} {d['zone']} | {d['seat_date']} {d['time_slot']} | 可用:{d['available_seats']}/{d['total_seats']} | 电源:{'有' if d['has_power'] else '无'} | {'静音区' if d['is_quiet_zone'] else '非静音区'}\n"
-                    elif query_type == "campus_event":  # 校园活动类型
+                    if query_type == "campus_event":  # 校园活动类型
                         response_text += f"{d['start_time']} | {d['event_name']} | {d['organizer']} | {d['venue']} | {d['category']} | 已报名:{d['registered']}/{d['total_capacity']}\n"
+                    elif query_type == "campus_news":  # 校园新闻类型
+                        response_text += f"[{d['publish_date']}] {d['title']} | 来源:{d['source']} | 类别:{d['category']}\n摘要: {d.get('summary', '')}\n链接: {d.get('url', '')}\n\n"
+                    elif query_type == "canteen":  # 餐厅类型
+                        response_text += f"{d['name']} | {d['location']} | {d['category']} | 营业时间: {d.get('opening_hours', '请参考店内')} | 状态: {d['status']}\n"
+                    elif query_type == "library_hours":  # 图书馆开放时间类型
+                        if d.get('is_closed'):
+                            response_text += f"{d['library_name']} {d['area']} | {d['day_of_week']} ({d.get('date','')}) | 闭馆\n"
+                        elif d.get('open_time') == '24hrs':
+                            response_text += f"{d['library_name']} {d['area']} | {d['day_of_week']} ({d.get('date','')}) | 24小时开放\n"
+                        else:
+                            response_text += f"{d['library_name']} {d['area']} | {d['day_of_week']} ({d.get('date','')}) | {d.get('open_time','')} - {d.get('close_time','')}\n"
                 if not response_text:  # 检查文本是否为空
                     response_text = "无结果。如需其他条件，请补充。"
 

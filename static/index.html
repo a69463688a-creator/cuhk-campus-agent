@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartCampus — CUHK校园生活助手</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --primary: #7b3f9e;
+            --primary-light: #9b6fc0;
+            --primary-bg: #f5f0f9;
+            --bg: #ffffff;
+            --bg-secondary: #f8fafc;
+            --text: #1e293b;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --hover: #f1f5f9;
+            --shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+            --radius: 10px;
+            --radius-sm: 6px;
+            --transition: .2s ease;
+            --accent-gold: #c8963e;
+        }
+
+        body.dark-mode {
+            --primary: #b388d9;
+            --primary-light: #ce93d8;
+            --primary-bg: #1e1a24;
+            --bg: #0f172a;
+            --bg-secondary: #1a1028;
+            --text: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border: #334155;
+            --hover: #1e293b;
+            --shadow: 0 1px 3px rgba(0,0,0,.3);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--bg-secondary);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        header {
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: var(--shadow);
+            z-index: 10;
+        }
+        header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        header h1 i { color: var(--primary); font-size: 1.1rem; }
+        header .brand-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--accent-gold);
+            display: inline-block;
+        }
+        .theme-btn {
+            background: none; border: 1px solid var(--border);
+            color: var(--text-secondary); font-size: 1rem;
+            cursor: pointer; padding: 6px 10px; border-radius: var(--radius-sm);
+            transition: var(--transition);
+        }
+        .theme-btn:hover { background: var(--hover); color: var(--text); }
+
+        /* Layout */
+        .layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 260px;
+            background: var(--bg);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .sidebar .actions { display: flex; flex-direction: column; gap: 8px; }
+        .sidebar .btn {
+            display: flex; align-items: center; gap: 8px;
+            padding: 10px 14px; border: 1px solid var(--border);
+            border-radius: var(--radius-sm); background: var(--bg);
+            color: var(--text); cursor: pointer; font-size: .85rem;
+            transition: var(--transition);
+        }
+        .sidebar .btn:hover { background: var(--primary-bg); border-color: var(--primary); }
+        .sidebar .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+        .sidebar .btn.primary:hover { background: var(--primary-light); }
+        .sidebar .divider {
+            color: var(--text-secondary); font-size: .7rem;
+            text-transform: uppercase; letter-spacing: .5px; margin-top: 4px;
+        }
+        .sidebar .history-list {
+            flex: 1; overflow-y: auto;
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .sidebar .history-item {
+            padding: 8px 10px; border-radius: var(--radius-sm);
+            cursor: pointer; font-size: .8rem; color: var(--text-secondary);
+            transition: var(--transition);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .sidebar .history-item:hover { background: var(--hover); color: var(--text); }
+        .sidebar .history-item.active { background: var(--primary-bg); color: var(--primary); font-weight: 500; }
+        .sidebar .session-info {
+            font-size: .72rem; color: var(--text-secondary);
+            padding-top: 8px; border-top: 1px solid var(--border);
+            word-break: break-all;
+        }
+
+        /* Feature tags */
+        .feature-tags {
+            display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;
+        }
+        .feature-tags .tag {
+            font-size: .65rem; padding: 2px 7px;
+            border-radius: 10px; border: 1px solid var(--border);
+            color: var(--text-secondary); white-space: nowrap;
+        }
+
+        /* Chat area */
+        .chat-area {
+            flex: 1; display: flex; flex-direction: column;
+            background: var(--bg-secondary);
+        }
+        .chat-messages {
+            flex: 1; overflow-y: auto;
+            padding: 20px 24px;
+            display: flex; flex-direction: column; gap: 16px;
+        }
+
+        /* Welcome card */
+        .welcome-card {
+            align-self: center; max-width: 500px; text-align: center;
+            padding: 40px 32px; margin: auto;
+        }
+        .welcome-card .icon {
+            font-size: 3rem; color: var(--primary); margin-bottom: 16px;
+        }
+        .welcome-card h2 {
+            font-size: 1.3rem; color: var(--text); margin-bottom: 8px;
+        }
+        .welcome-card p {
+            color: var(--text-secondary); font-size: .88rem; line-height: 1.7;
+        }
+
+        /* Messages */
+        .message {
+            display: flex; flex-direction: column;
+            max-width: 75%; animation: fadeIn .25s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .message.user { align-self: flex-end; }
+        .message.system { align-self: flex-start; }
+        .message .label {
+            font-size: .75rem; color: var(--text-secondary);
+            margin-bottom: 4px; padding: 0 4px;
+        }
+        .message .bubble {
+            padding: 12px 16px; border-radius: var(--radius);
+            line-height: 1.7; font-size: .92rem; word-break: break-word;
+        }
+        .message.user .bubble {
+            background: var(--primary); color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .message.system .bubble {
+            background: var(--bg); border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
+        }
+        .message .bubble pre {
+            background: rgba(0,0,0,.06); padding: 12px;
+            border-radius: var(--radius-sm); overflow-x: auto;
+            margin: 8px 0; font-size: .83rem;
+        }
+        .message .bubble code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: .83rem; }
+        .message .bubble p { margin: 4px 0; }
+        .message.system .bubble pre { background: rgba(0,0,0,.04); }
+
+        /* Typing */
+        .typing-indicator { display: flex; gap: 4px; padding: 12px 16px; }
+        .typing-indicator span {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--text-secondary);
+            animation: bounce 1.2s infinite;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: .2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: .4s; }
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-6px); }
+        }
+
+        /* Input */
+        .chat-input-bar {
+            background: var(--bg); border-top: 1px solid var(--border);
+            padding: 14px 24px 16px;
+        }
+        .filter-row {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 8px; font-size: .76rem; color: var(--text-secondary);
+        }
+        .filter-row select {
+            padding: 4px 8px; border: 1px solid var(--border);
+            border-radius: var(--radius-sm); background: var(--bg);
+            color: var(--text); font-size: .76rem; cursor: pointer;
+        }
+        .filter-row select:focus {
+            outline: none; border-color: var(--primary);
+        }
+        .input-row { display: flex; gap: 8px; }
+        .input-row textarea {
+            flex: 1; padding: 10px 14px;
+            border: 1px solid var(--border); border-radius: var(--radius);
+            font-size: .85rem; resize: none; height: 42px; max-height: 120px;
+            font-family: inherit; background: var(--bg-secondary); color: var(--text);
+            transition: var(--transition);
+        }
+        .input-row textarea:focus {
+            outline: none; border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(123,63,158,.12);
+        }
+        .input-row .send-btn {
+            background: var(--primary); color: #fff; border: none;
+            padding: 0 18px; border-radius: var(--radius);
+            cursor: pointer; font-size: .85rem; font-weight: 500;
+            display: flex; align-items: center; gap: 6px;
+            transition: var(--transition); white-space: nowrap;
+        }
+        .input-row .send-btn:hover { background: var(--primary-light); }
+        .input-row .send-btn:disabled { background: var(--text-secondary); cursor: not-allowed; }
+
+        /* Quick replies */
+        .quick-replies {
+            display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+        }
+        .quick-replies .chip {
+            padding: 5px 12px; border: 1px solid var(--border);
+            border-radius: 16px; font-size: .75rem;
+            color: var(--text-secondary); cursor: pointer;
+            background: var(--bg); transition: var(--transition);
+        }
+        .quick-replies .chip:hover {
+            background: var(--primary-bg); border-color: var(--primary); color: var(--primary);
+        }
+
+        /* Status indicator */
+        .status-dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: #22c55e; display: inline-block; margin-right: 4px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { display: none; }
+            .message { max-width: 90%; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>
+            <i class="fas fa-graduation-cap"></i>
+            SmartCampus
+            <span class="brand-dot"></span>
+            CUHK校园生活助手
+        </h1>
+        <button class="theme-btn" id="themeToggle" title="切换主题">
+            <i class="fas fa-moon"></i>
+        </button>
+    </header>
+
+    <div class="layout">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="actions">
+                <button class="btn primary" id="newSessionBtn">
+                    <i class="fas fa-plus"></i> 新会话
+                </button>
+                <button class="btn" id="clearHistoryBtn">
+                    <i class="fas fa-trash-alt"></i> 清除历史
+                </button>
+            </div>
+
+            <span class="divider">查询类型</span>
+            <div class="feature-tags">
+                <span class="tag">📚 课程</span>
+                <span class="tag">🎉 活动</span>
+                <span class="tag">📰 新闻</span>
+                <span class="tag">🍽️ 餐厅</span>
+                <span class="tag">📖 图书馆</span>
+                <span class="tag">🌤️ 天气</span>
+            </div>
+
+            <span class="divider">历史会话</span>
+            <div class="history-list" id="historyList">
+                <div class="history-item" style="color:var(--text-secondary); font-style:italic;">
+                    暂无历史会话
+                </div>
+            </div>
+
+            <div class="session-info" id="sessionInfo">
+                <span class="status-dot"></span> 就绪
+            </div>
+        </aside>
+
+        <!-- 聊天区域 -->
+        <main class="chat-area">
+            <div class="chat-messages" id="chatMessages">
+                <div class="welcome-card">
+                    <div class="icon">🎓</div>
+                    <h2>欢迎使用 CUHK 校园生活助手</h2>
+                    <p>
+                        我可以帮你查询<strong>课程信息</strong>、<strong>校园活动</strong>、<strong>校园新闻</strong>、
+                        <strong>餐厅信息</strong>、<strong>图书馆开放时间</strong>和<strong>天气</strong>。
+                        <br>直接输入问题，我会智能识别并为你找到答案。
+                    </p>
+                </div>
+            </div>
+
+            <div class="chat-input-bar">
+                <div class="filter-row">
+                    <label for="sourceFilter">查询类型：</label>
+                    <select id="sourceFilter">
+                        <option value="">全部</option>
+                    </select>
+                    <span style="margin-left:auto; font-size:.7rem;">
+                        支持多意图组合查询
+                    </span>
+                </div>
+                <div class="input-row">
+                    <textarea id="chatInput" placeholder="输入问题，回车发送（Shift+Enter 换行）..."
+                        rows="1" spellcheck="false"></textarea>
+                    <button class="send-btn" id="sendBtn">
+                        <i class="fas fa-paper-plane"></i> 发送
+                    </button>
+                </div>
+                <div class="quick-replies" id="quickReplies">
+                    <span class="chip">今天天气怎么样？</span>
+                    <span class="chip">最近有什么讲座或活动？</span>
+                    <span class="chip">大学图书馆今天几点关门？</span>
+                    <span class="chip">崇基学院有什么餐厅？</span>
+                    <span class="chip">最近有什么校园新闻？</span>
+                    <span class="chip">查询CSCI2100课程信息</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let currentSessionId = null;
+        let isResponseInProgress = false;
+        let socket = null;
+        let isDarkMode = true;
+
+        const $messages = document.getElementById('chatMessages');
+        const $input = document.getElementById('chatInput');
+        const $sendBtn = document.getElementById('sendBtn');
+        const $sourceFilter = document.getElementById('sourceFilter');
+        const $historyList = document.getElementById('historyList');
+        const $sessionInfo = document.getElementById('sessionInfo');
+        const $themeToggle = document.getElementById('themeToggle');
+        const API_BASE = '';
+
+        // ============ Init ============
+        document.addEventListener('DOMContentLoaded', async () => {
+            const saved = localStorage.getItem('darkMode');
+            isDarkMode = saved === null ? true : saved === 'true';
+            updateTheme();
+            await createNewSession();
+            await loadSources();
+            bindEvents();
+        });
+
+        function bindEvents() {
+            $sendBtn.addEventListener('click', sendMessage);
+            $input.addEventListener('keydown', e => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+            });
+            $input.addEventListener('input', () => {
+                $input.style.height = 'auto';
+                $input.style.height = Math.min($input.scrollHeight, 120) + 'px';
+            });
+            document.getElementById('newSessionBtn').addEventListener('click', createNewSession);
+            document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
+            $themeToggle.addEventListener('click', toggleTheme);
+            document.querySelectorAll('.quick-replies .chip').forEach(chip => {
+                chip.addEventListener('click', () => {
+                    $input.value = chip.textContent;
+                    $input.style.height = 'auto';
+                    $input.style.height = $input.scrollHeight + 'px';
+                    sendMessage();
+                });
+            });
+        }
+
+        // ============ Theme ============
+        function toggleTheme() {
+            isDarkMode = !isDarkMode;
+            localStorage.setItem('darkMode', isDarkMode);
+            updateTheme();
+        }
+        function updateTheme() {
+            if (isDarkMode) {
+                document.body.classList.add('dark-mode');
+                $themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
+            } else {
+                document.body.classList.remove('dark-mode');
+                $themeToggle.innerHTML = '<i class="fas fa-moon"></i>';
+            }
+        }
+
+        // ============ Session ============
+        async function createNewSession() {
+            try {
+                const res = await fetch(`${API_BASE}/api/create_session`, { method: 'POST' });
+                const data = await res.json();
+                currentSessionId = data.session_id;
+                $sessionInfo.innerHTML = `<span class="status-dot"></span> 会话 ${currentSessionId.slice(0, 8)}...`;
+                clearChat();
+                await loadHistory();
+            } catch (e) { console.error('创建会话失败:', e); }
+        }
+
+        async function loadSources() {
+            try {
+                const res = await fetch(`${API_BASE}/api/sources`);
+                const data = await res.json();
+                $sourceFilter.innerHTML = '';
+                data.sources.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.value; opt.textContent = s.label;
+                    $sourceFilter.appendChild(opt);
+                });
+            } catch (e) { console.error('加载查询类型失败:', e); }
+        }
+
+        async function loadHistory() {
+            if (!currentSessionId) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/history/${currentSessionId}`);
+                const data = await res.json();
+                $historyList.innerHTML = '';
+                if (data.history.length > 0) {
+                    const item = document.createElement('div');
+                    item.className = 'history-item active';
+                    const firstMsg = data.history[0]?.content || '(空会话)';
+                    const preview = firstMsg.length > 25 ? firstMsg.slice(0, 25) + '...' : firstMsg;
+                    item.textContent = `${preview} (${data.history.length}轮)`;
+                    item.addEventListener('click', () => {
+                        clearChat();
+                        data.history.forEach(h => {
+                            addMessage(h.role, h.content);
+                        });
+                    });
+                    $historyList.appendChild(item);
+                } else {
+                    $historyList.innerHTML = '<div class="history-item" style="color:var(--text-secondary); font-style:italic;">暂无历史会话</div>';
+                }
+            } catch (e) { console.error('加载历史失败:', e); }
+        }
+
+        async function clearHistory() {
+            if (!currentSessionId || !confirm('确定要清除当前会话的所有消息吗？')) return;
+            try {
+                await fetch(`${API_BASE}/api/history/${currentSessionId}`, { method: 'DELETE' });
+                $historyList.innerHTML = '<div class="history-item" style="color:var(--text-secondary); font-style:italic;">暂无历史会话</div>';
+                clearChat();
+            } catch (e) { alert('清除失败: ' + e.message); }
+        }
+
+        // ============ Chat ============
+        function clearChat() {
+            $messages.innerHTML = `
+                <div class="welcome-card">
+                    <div class="icon">🎓</div>
+                    <h2>CUHK 校园生活助手</h2>
+                    <p>输入问题开始查询，支持课程、活动、新闻、餐厅、图书馆和天气。</p>
+                </div>`;
+        }
+
+        function addMessage(type, content) {
+            // 移除欢迎卡片
+            const welcome = $messages.querySelector('.welcome-card');
+            if (welcome) welcome.remove();
+
+            const el = document.createElement('div');
+            el.className = `message ${type}`;
+            const label = type === 'user' ? '你' : 'CUHK助手';
+            el.innerHTML = `
+                <span class="label">${label}</span>
+                <div class="bubble">${marked.parse(content)}</div>`;
+            $messages.appendChild(el);
+            $messages.scrollTop = $messages.scrollHeight;
+            return el;
+        }
+
+        function addTypingIndicator() {
+            const welcome = $messages.querySelector('.welcome-card');
+            if (welcome) welcome.remove();
+
+            const el = document.createElement('div');
+            el.className = 'message system';
+            el.id = 'typingIndicator';
+            el.innerHTML = '<span class="label">CUHK助手</span><div class="typing-indicator bubble"><span></span><span></span><span></span></div>';
+            $messages.appendChild(el);
+            $messages.scrollTop = $messages.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const el = document.getElementById('typingIndicator');
+            if (el) el.remove();
+        }
+
+        // ============ Send ============
+        async function sendMessage() {
+            const query = $input.value.trim();
+            if (!query || isResponseInProgress) return;
+
+            $input.value = '';
+            $input.style.height = 'auto';
+            addMessage('user', query);
+            isResponseInProgress = true;
+            $sendBtn.disabled = true;
+
+            addTypingIndicator();
+
+            try {
+                // 先用非流式 API 获取完整响应
+                const res = await fetch(`${API_BASE}/api/query`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query,
+                        source_filter: $sourceFilter.value || null,
+                        session_id: currentSessionId
+                    })
+                });
+                const data = await res.json();
+                removeTypingIndicator();
+
+                if (data.is_streaming) {
+                    // 如果后端标记需要流式，使用 WebSocket
+                    const msgEl = document.createElement('div');
+                    msgEl.className = 'message system';
+                    msgEl.innerHTML = '<span class="label">CUHK助手</span><div class="bubble"></div>';
+                    $messages.appendChild(msgEl);
+                    const bubble = msgEl.querySelector('.bubble');
+                    await streamResponse(query, bubble);
+                } else {
+                    addMessage('system', data.answer);
+                }
+
+                await loadHistory();
+            } catch (e) {
+                removeTypingIndicator();
+                addMessage('system', `❌ 发生错误: ${e.message}`);
+            } finally {
+                isResponseInProgress = false;
+                $sendBtn.disabled = false;
+                $input.focus();
+            }
+        }
+
+        function streamResponse(query, bubble) {
+            if (socket && socket.readyState === WebSocket.OPEN) socket.close();
+            return new Promise((resolve, reject) => {
+                const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                socket = new WebSocket(`${wsProtocol}//${location.host}${API_BASE}/api/stream`);
+                let accumulated = '';
+
+                socket.onopen = () => {
+                    socket.send(JSON.stringify({
+                        query,
+                        source_filter: $sourceFilter.value || null,
+                        session_id: currentSessionId
+                    }));
+                };
+
+                socket.onmessage = e => {
+                    const d = JSON.parse(e.data);
+                    if (d.type === 'token') {
+                        accumulated += d.token;
+                        bubble.innerHTML = marked.parse(accumulated);
+                        $messages.scrollTop = $messages.scrollHeight;
+                    } else if (d.type === 'end') {
+                        socket.close();
+                        resolve();
+                    } else if (d.type === 'error') {
+                        bubble.innerHTML += `<p style="color:#ef4444;">[错误: ${d.error}]</p>`;
+                        socket.close();
+                        reject(new Error(d.error));
+                    }
+                };
+
+                socket.onerror = () => {
+                    bubble.innerHTML += '<p style="color:#ef4444;">[连接错误]</p>';
+                    reject(new Error('WebSocket connection error'));
+                };
+                socket.onclose = () => resolve();
+            });
+        }
+    </script>
+</body>
+</html>

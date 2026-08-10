@@ -1,45 +1,4 @@
 -- ============================================================
--- CUHK 自习室 种子数据
--- ============================================================
-INSERT INTO study_rooms (building, room_number, room_date, start_time, end_time, capacity, available_seats, has_projector, has_ac, status) VALUES
-('Yasumoto International Academic Park', 'YIA301', '2026-08-10', '08:00:00', '22:00:00', 40, 12, 1, 1, 'available'),
-('Yasumoto International Academic Park', 'YIA301', '2026-08-11', '08:00:00', '22:00:00', 40, 25, 1, 1, 'available'),
-('Yasumoto International Academic Park', 'YIA301', '2026-08-12', '08:00:00', '22:00:00', 40, 8, 1, 1, 'available'),
-('Yasumoto International Academic Park', 'YIA402', '2026-08-10', '08:00:00', '22:00:00', 30, 5, 0, 1, 'available'),
-('Yasumoto International Academic Park', 'YIA402', '2026-08-11', '08:00:00', '22:00:00', 30, 15, 0, 1, 'available'),
-('Yasumoto International Academic Park', 'YIA402', '2026-08-12', '08:00:00', '22:00:00', 30, 0, 0, 1, 'full'),
-('Lee Shau Kee Building', 'LSK201', '2026-08-10', '09:00:00', '21:00:00', 60, 30, 1, 1, 'available'),
-('Lee Shau Kee Building', 'LSK201', '2026-08-11', '09:00:00', '21:00:00', 60, 42, 1, 1, 'available'),
-('Lee Shau Kee Building', 'LSK201', '2026-08-12', '09:00:00', '21:00:00', 60, 18, 1, 1, 'available'),
-('Lee Shau Kee Building', 'LSK304', '2026-08-10', '09:00:00', '21:00:00', 25, 3, 0, 1, 'available'),
-('Science Centre', 'SC101', '2026-08-10', '10:00:00', '20:00:00', 50, 20, 1, 1, 'available'),
-('Science Centre', 'SC101', '2026-08-11', '10:00:00', '20:00:00', 50, 35, 1, 1, 'available'),
-('Science Centre', 'SC101', '2026-08-12', '10:00:00', '20:00:00', 50, 10, 1, 1, 'available'),
-('Mong Man Wai Building', 'MMW202', '2026-08-10', '08:30:00', '22:30:00', 35, 15, 1, 1, 'available'),
-('Mong Man Wai Building', 'MMW202', '2026-08-11', '08:30:00', '22:30:00', 35, 22, 1, 1, 'available'),
-('Mong Man Wai Building', 'MMW202', '2026-08-12', '08:30:00', '22:30:00', 35, 7, 1, 1, 'available'),
-('Ho Sin Hang Building', 'HSH101', '2026-08-10', '08:00:00', '23:00:00', 45, 28, 1, 1, 'available'),
-('Ho Sin Hang Building', 'HSH101', '2026-08-11', '08:00:00', '23:00:00', 45, 33, 1, 1, 'available');
-
--- ============================================================
--- CUHK 图书馆座位 种子数据
--- ============================================================
-INSERT INTO library_seats (library_name, floor, zone, seat_date, time_slot, total_seats, available_seats, has_power, is_quiet_zone) VALUES
-('University Library', 1, 'Learning Commons', '2026-08-10', '09:00-12:00', 80, 25, 1, 0),
-('University Library', 1, 'Learning Commons', '2026-08-10', '14:00-17:00', 80, 18, 1, 0),
-('University Library', 2, 'Quiet Study Zone', '2026-08-10', '09:00-12:00', 120, 45, 1, 1),
-('University Library', 2, 'Quiet Study Zone', '2026-08-10', '14:00-17:00', 120, 32, 1, 1),
-('University Library', 3, 'Research Zone', '2026-08-10', '09:00-12:00', 50, 15, 1, 1),
-('University Library', 3, 'Research Zone', '2026-08-10', '14:00-17:00', 50, 10, 1, 1),
-('Chung Chi Library', 1, 'Reading Area', '2026-08-10', '09:00-12:00', 60, 30, 1, 0),
-('Chung Chi Library', 1, 'Reading Area', '2026-08-10', '14:00-17:00', 60, 22, 1, 0),
-('Chung Chi Library', 2, 'Silent Zone', '2026-08-10', '09:00-12:00', 40, 18, 1, 1),
-('New Asia Library', 1, 'Group Study', '2026-08-10', '09:00-12:00', 30, 12, 1, 0),
-('New Asia Library', 1, 'Group Study', '2026-08-10', '14:00-17:00', 30, 8, 1, 0),
-('United College Library', 1, 'Main Reading', '2026-08-10', '09:00-12:00', 45, 20, 1, 0),
-('Lee Quo Wei Law Library', 2, 'Quiet Study', '2026-08-10', '09:00-12:00', 35, 15, 1, 1);
-
--- ============================================================
 -- CUHK 校园活动 种子数据
 -- ============================================================
 INSERT INTO campus_events (event_name, organizer, venue, start_time, end_time, category, total_capacity, registered, description) VALUES
@@ -53,3 +12,49 @@ INSERT INTO campus_events (event_name, organizer, venue, start_time, end_time, c
 ('Mental Health Awareness Week', 'University Health Service', 'Central Campus', '2026-09-20 10:00:00', '2026-09-25 18:00:00', 'Wellness', 500, 200, 'A week of workshops, talks, and activities promoting mental wellness.'),
 ('Shaw College Movie Night', 'Shaw College', 'Shaw College Amphitheatre', '2026-08-22 19:00:00', '2026-08-22 22:00:00', 'Entertainment', 100, 55, 'Outdoor movie screening under the stars. Free popcorn!'),
 ('Startup Pitch Competition', 'CUHK Entrepreneurship Centre', 'Cheng Yu Tung Building', '2026-10-20 14:00:00', '2026-10-20 18:00:00', 'Competition', 120, 70, 'Pitch your startup idea to a panel of investors and win seed funding.');
+
+-- ============================================================
+-- CUHK 校园餐厅 种子数据（来源: CUHK accommodation page）
+-- ============================================================
+INSERT INTO canteen (name, location, opening_hours, phone, category, status) VALUES
+('Basic Medical Sciences Building Snack Bar', 'Basic Medical Sciences Building', '10:00-19:00', '', 'Snack Bar', 'Open'),
+('Benjamin Franklin Centre Coffee Corner', 'Benjamin Franklin Centre', 'Mon-Sat 07:30-19:30, Sun/PH Closed', '', 'Cafe', 'Open'),
+('Benjamin Franklin Centre Staff Canteen', 'Benjamin Franklin Centre', 'Mon-Fri 11:00-15:00, PH Closed', '', 'Canteen', 'Open'),
+('Benjamin Franklin Centre Student Canteen', 'Benjamin Franklin Centre', 'Mon-Fri 07:30-20:00, Sun 08:30-19:30', '', 'Canteen', 'Open'),
+('Women Cooperative Store', 'Benjamin Franklin Centre', 'Mon-Sat 08:00-23:30', '', 'Store', 'Open'),
+('Chung Chi College Staff Club', 'Chung Chi College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Chung Chi College Student Canteen', 'Chung Chi College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Li Wai Chun Building Cafe', 'Li Wai Chun Building', 'Please refer to outlet', '', 'Cafe', 'Open'),
+('Li Wai Chun Building Halal Food Outlet', 'Li Wai Chun Building', 'Please refer to outlet', '', 'Canteen', 'Open'),
+('Orchid Lodge', 'New Asia College', 'Please refer to outlet', '', 'Restaurant', 'Open'),
+('Paper & Coffee (Pommerenke Student Centre)', 'Pommerenke Student Centre', 'Please refer to outlet', '', 'Cafe', 'Open'),
+('New Asia College Staff Canteen', 'New Asia College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('New Asia College Student Canteen', 'New Asia College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Yun Chi Hsien', 'New Asia College', 'Please refer to college website', '', 'Restaurant', 'Open'),
+('New Asia College Coffee Shop', 'New Asia College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('United College Staff Canteen', 'United College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('United College Student Canteen', 'United College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Si Yuan Amenities Centre', 'United College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Cafe Shaw', 'Shaw College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('Morningside College Dining Hall', 'Morningside College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Morningside College Cafe', 'Morningside College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('S.H. Ho College Canteen', 'S.H. Ho College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('S.H. Ho College Connexion', 'S.H. Ho College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('S.H. Ho College Cafe', 'S.H. Ho College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('CW Chu College Canteen', 'CW Chu College', 'Mon-Sat 08:30-21:30', '', 'Canteen', 'Open'),
+('Wu Yee Sun College Student Canteen', 'Wu Yee Sun College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Wu Yee Sun College Staff Canteen', 'Wu Yee Sun College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Wu Yee Sun College Cafe', 'Wu Yee Sun College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('Lee Woo Sing College WS Pavilion', 'Lee Woo Sing College', 'Please refer to college website', '', 'Restaurant', 'Open'),
+('Lee Woo Sing College The Harmony', 'Lee Woo Sing College', 'Please refer to college website', '', 'Canteen', 'Open'),
+('Lee Woo Sing College Cafe Tolo', 'Lee Woo Sing College', 'Please refer to college website', '', 'Cafe', 'Open'),
+('The Stage', 'Yasumoto International Academic Park', 'Mon-Fri 08:15-16:30', '', 'Cafe', 'Open'),
+('Gastronomy Club', 'Yasumoto International Academic Park', 'Members only', '', 'Restaurant', 'Open'),
+('Inno330', 'Cheng Yu Tung Building', 'Please refer to outlet', '', 'Cafe', 'Open'),
+('Tea House', 'Cheng Yu Tung Building', 'Please refer to outlet', '', 'Restaurant', 'Open'),
+('The Infinity Room', 'Cheng Yu Tung Building', 'Please refer to outlet', '', 'Restaurant', 'Open'),
+('Art Museum Cafe - Ideaology', 'Art Museum', 'Please refer to outlet', '', 'Cafe', 'Open'),
+('Benjamin Franklin Centre Vegetarian Food Shop', 'Benjamin Franklin Centre', '', '', 'Canteen', 'Closed'),
+('Lee Shau Kee Building Snack Bar', 'Lee Shau Kee Building', '', '', 'Snack Bar', 'Closed'),
+('YIA Cafe', 'Yasumoto International Academic Park', '', '', 'Cafe', 'Closed'),
+('Postgraduate Hall 3 Canteen', 'Postgraduate Hall 3', '', '', 'Canteen', 'Closed');

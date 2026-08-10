@@ -27,51 +27,12 @@ CREATE TABLE IF NOT EXISTS course_info (
 ) ENGINE=INNODB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='课程信息表';
 
 -- ============================================================
--- 自习室信息表
--- ============================================================
-DROP TABLE IF EXISTS study_rooms;
-CREATE TABLE study_rooms (
-    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    building VARCHAR(80) NOT NULL COMMENT '教学楼名称',
-    room_number VARCHAR(20) NOT NULL COMMENT '教室编号',
-    room_date DATE NOT NULL COMMENT '开放日期',
-    start_time TIME NOT NULL COMMENT '开放开始时间',
-    end_time TIME NOT NULL COMMENT '开放结束时间',
-    capacity INT NOT NULL COMMENT '总座位数',
-    available_seats INT NOT NULL COMMENT '剩余可用座位',
-    has_projector TINYINT DEFAULT 0 COMMENT '是否有投影仪（0/1）',
-    has_ac TINYINT DEFAULT 1 COMMENT '是否有空调（0/1）',
-    status VARCHAR(20) DEFAULT 'available' COMMENT '状态：available / full / closed',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_room (building, room_number, room_date, start_time)
-) COMMENT='自习室信息表';
-
--- ============================================================
--- 图书馆座位表
--- ============================================================
-DROP TABLE IF EXISTS library_seats;
-CREATE TABLE library_seats (
-    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    library_name VARCHAR(80) NOT NULL COMMENT '图书馆名称',
-    floor INT NOT NULL COMMENT '楼层',
-    zone VARCHAR(40) NOT NULL COMMENT '区域（如 Quiet Zone / Group Study）',
-    seat_date DATE NOT NULL COMMENT '日期',
-    time_slot VARCHAR(20) NOT NULL COMMENT '时间段（如 09:00-12:00）',
-    total_seats INT NOT NULL COMMENT '该区域总座位数',
-    available_seats INT NOT NULL COMMENT '剩余可用座位',
-    has_power TINYINT DEFAULT 1 COMMENT '是否有电源插座（0/1）',
-    is_quiet_zone TINYINT DEFAULT 0 COMMENT '是否静音区（0/1）',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_seat (library_name, floor, zone, seat_date, time_slot)
-) COMMENT='图书馆座位信息表';
-
--- ============================================================
 -- 校园活动表
 -- ============================================================
 DROP TABLE IF EXISTS campus_events;
 CREATE TABLE campus_events (
     id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    event_name VARCHAR(100) NOT NULL COMMENT '活动名称',
+    event_name VARCHAR(200) NOT NULL COMMENT '活动名称',
     organizer VARCHAR(100) NOT NULL COMMENT '主办方（书院/学系/社团）',
     venue VARCHAR(100) NOT NULL COMMENT '活动场地',
     start_time DATETIME NOT NULL COMMENT '开始时间',
@@ -83,3 +44,53 @@ CREATE TABLE campus_events (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_event (start_time, event_name, venue)
 ) COMMENT='校园活动信息表';
+
+-- ============================================================
+-- 校园新闻表
+-- ============================================================
+DROP TABLE IF EXISTS campus_news;
+CREATE TABLE campus_news (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    title VARCHAR(200) NOT NULL COMMENT '新闻标题',
+    source VARCHAR(100) NOT NULL DEFAULT 'CUHK CPR' COMMENT '来源',
+    category VARCHAR(30) DEFAULT 'General' COMMENT '新闻类别',
+    publish_date DATETIME NOT NULL COMMENT '发布日期',
+    summary TEXT COMMENT '新闻摘要',
+    url VARCHAR(500) COMMENT '原文链接',
+    image_url VARCHAR(500) COMMENT '封面图URL',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_news (publish_date, title)
+) COMMENT='校园新闻表';
+
+-- ============================================================
+-- 校园餐厅表
+-- ============================================================
+DROP TABLE IF EXISTS canteen;
+CREATE TABLE canteen (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    name VARCHAR(80) NOT NULL COMMENT '餐厅名称',
+    location VARCHAR(100) NOT NULL COMMENT '所在位置/地址',
+    opening_hours VARCHAR(300) COMMENT '营业时间',
+    phone VARCHAR(50) COMMENT '联系电话',
+    category VARCHAR(30) DEFAULT 'Canteen' COMMENT '类别（Canteen/Cafe/Restaurant/Snack Bar）',
+    status VARCHAR(20) DEFAULT 'Open' COMMENT '营业状态（Open/Closed）',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_canteen (name, location)
+) COMMENT='校园餐厅信息表';
+
+-- ============================================================
+-- 图书馆开放时间表
+-- ============================================================
+DROP TABLE IF EXISTS library_hours;
+CREATE TABLE library_hours (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    library_name VARCHAR(100) NOT NULL COMMENT '图书馆名称',
+    area VARCHAR(100) DEFAULT 'Main' COMMENT '区域（如 Main/ Learning Garden/ Staffed services）',
+    day_of_week VARCHAR(10) NOT NULL COMMENT '星期几（Mon/Tue/Wed/Thu/Fri/Sat/Sun）',
+    date DATE COMMENT '具体日期',
+    open_time VARCHAR(10) COMMENT '开门时间（如 09:00, 24hrs）',
+    close_time VARCHAR(10) COMMENT '关门时间',
+    is_closed TINYINT DEFAULT 0 COMMENT '是否闭馆',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_lib_hours (library_name, area, day_of_week, date)
+) COMMENT='图书馆开放时间表';
