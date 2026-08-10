@@ -9,7 +9,7 @@
 import json
 import asyncio
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -93,7 +93,7 @@ course_info表结构：{table_schema_string}
 async def get_courses(sql):
     try:
         # 启动 MCP server，通过streamable建立连接
-        async with streamablehttp_client("http://127.0.0.1:8002/mcp") as (read, write, _):
+        async with streamable_http_client("http://127.0.0.1:8002/mcp") as (read, write):
             # 使用读写通道创建 MCP 会话
             async with ClientSession(read, write) as session:
                 try:

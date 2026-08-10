@@ -14,11 +14,13 @@ import re
 import uuid
 import time
 import asyncio
+import subprocess
 from datetime import datetime
 from typing import Optional, Dict, List
 
 import pytz
 import requests
+import mysql.connector
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -77,6 +79,98 @@ async def startup():
     agent_network.add("FacilityQueryAssistant", "http://localhost:5006")
     logger.info("AgentNetwork 初始化完成：CourseQueryAssistant + FacilityQueryAssistant")
     logger.info("Web 服务器启动就绪，监听 http://0.0.0.0:8080")
+
+    # 后台异步检查数据新鲜度（不阻塞启动）
+    asyncio.create_task(check_and_refresh_data())
+
+
+# ============ 数据新鲜度检查 ============
+async def check_and_refresh_data():
+    """启动时检查各数据表的新鲜度，自动刷新过期的高频数据"""
+    await asyncio.sleep(2)  # 让启动日志先输出完
+
+    # 数据表配置: (表名, 标签, 过期阈值_hours, 脚本路径, 是否自动刷新)
+    tables = [
+        ("campus_events",    "校园活动",   24,  "utils/spider_campus.py",        True),
+        ("campus_news",      "校园新闻",   24,  "utils/spider_news.py",          True),
+        ("canteen",          "餐厅信息",   168, "utils/spider_canteen.py",       False),
+        ("library_hours",    "图书馆时间", 168, "utils/spider_library_hours.py", False),
+        ("course_info",      "课程数据",   168, "utils/spider_course.py",        False),
+    ]
+
+    logger.info("[数据检查] ========== 检查数据新鲜度 ==========")
+
+    conn = None
+    try:
+        conn = mysql.connector.connect(
+            host=conf.host, user=conf.user,
+            password=conf.password, database=conf.database,
+            charset="utf8mb4"
+        )
+        cursor = conn.cursor()
+    except Exception as e:
+        logger.error(f"[数据检查] MySQL 连接失败，跳过数据检查: {e}")
+        return
+
+    try:
+        now = datetime.now(TZ)
+        stale_auto = []    # 需要自动刷新的
+        stale_manual = []  # 需要手动更新的
+
+        for table, label, max_hours, script, auto_refresh in tables:
+            try:
+                cursor.execute(f"SELECT MAX(created_at) FROM {table}")
+                result = cursor.fetchone()
+                latest = result[0] if result else None
+
+                if latest is None:
+                    logger.warning(f"  {label}: ⚠️ 无数据记录")
+                    (stale_auto if auto_refresh else stale_manual).append((label, script))
+                    continue
+
+                if latest.tzinfo is None:
+                    latest = TZ.localize(latest)
+                hours_ago = (now - latest).total_seconds() / 3600
+
+                if hours_ago > max_hours:
+                    logger.warning(f"  {label}: ⚠️ 已过期 ({hours_ago:.0f}h 前, 阈值 {max_hours}h)")
+                    (stale_auto if auto_refresh else stale_manual).append((label, script))
+                else:
+                    logger.info(f"  {label}: ✅ 新鲜 ({hours_ago:.0f}h 前)")
+            except Exception as e:
+                logger.error(f"  {label}: 检查失败 - {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+    # 自动刷新高频数据（新闻、活动）
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    for label, script in stale_auto:
+        logger.info(f"[自动刷新] 正在更新{label}...")
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda s=script: subprocess.run(
+                    [sys.executable, os.path.join(BASE_DIR, s), "--force", "--once"],
+                    cwd=BASE_DIR, capture_output=True, text=True, timeout=120
+                ),
+            )
+            if result.returncode == 0:
+                logger.info(f"[自动刷新] {label} ✅ 更新成功")
+            else:
+                stderr = (result.stderr or "")[-300:]
+                logger.warning(f"[自动刷新] {label} ⚠️ 返回码 {result.returncode}: {stderr}")
+        except Exception as e:
+            logger.error(f"[自动刷新] {label} ❌ 失败: {e}")
+
+    # 低频数据过期仅提示
+    for label, script in stale_manual:
+        logger.warning(f"[数据检查] {label}已过期，请手动运行: python {script} --force --once")
+
+    if not stale_auto and not stale_manual:
+        logger.info("[数据检查] 全部数据新鲜，无需更新 ✅")
+    logger.info("[数据检查] ========== 检查完成 ==========")
 
 
 # ============ 请求模型 ============
@@ -186,18 +280,22 @@ def format_weather_for_prompt(data: dict) -> str:
 # ============ A2A Agent 调用 ============
 async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> str:
     """调用 A2A Agent 并返回原始结果文本"""
-    agent = agent_network.get_agent(agent_name)
-    chat_history = '\n'.join(conversation_history.split("\n")[-7:-1]) + f'\nUser: {query_str}'
-    message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
-    task = Task(id="task-" + str(uuid.uuid4()), message=message.to_dict())
+    try:
+        agent = agent_network.get_agent(agent_name)
+        chat_history = '\n'.join(conversation_history.split("\n")[-7:-1]) + f'\nUser: {query_str}'
+        message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
+        task = Task(id="task-" + str(uuid.uuid4()), message=message.to_dict())
 
-    raw_response = await agent.send_task_async(task)
-    logger.info(f"{agent_name} 响应状态: {raw_response.status.state}")
+        raw_response = await agent.send_task_async(task)
+        logger.info(f"{agent_name} 响应状态: {raw_response.status.state}")
 
-    if raw_response.status.state == 'completed':
-        return raw_response.artifacts[0]['parts'][0]['text']
-    else:
-        return raw_response.status.message['content']['text']
+        if raw_response.status.state == 'completed':
+            return raw_response.artifacts[0]['parts'][0]['text']
+        else:
+            return raw_response.status.message['content']['text']
+    except Exception as e:
+        logger.error(f"A2A Agent '{agent_name}' 调用失败: {e}")
+        return f"ERROR: Agent '{agent_name}' 不可达 — {str(e)}"
 
 
 async def summarize_response(agent_name: str, query_str: str, agent_result: str) -> str:

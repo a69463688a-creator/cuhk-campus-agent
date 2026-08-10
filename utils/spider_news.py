@@ -221,13 +221,21 @@ def setup_scheduler():
 if __name__ == "__main__":
     import sys
     force = "--force" in sys.argv
+    once = "--once" in sys.argv
 
     print("=" * 60)
     print("CUHK Campus News Spider")
     print(f"数据源: {NEWS_LIST_URL}")
     mode = '强制更新' if force else '增量更新（>24h 才拉取）'
+    if once:
+        mode += ' | 单次执行模式'
     print(f"模式: {mode}")
     print("=" * 60)
 
     update_campus_news(force=force)
+
+    if once:
+        print("[INFO] --once 模式，更新完成，退出。")
+        sys.exit(0)
+
     setup_scheduler()

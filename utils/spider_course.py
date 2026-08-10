@@ -416,17 +416,24 @@ def setup_scheduler():
 
 if __name__ == "__main__":
     force = "--force" in sys.argv
+    once = "--once" in sys.argv
 
     print("=" * 60)
     print("CUHK Course Data Spider")
     print(f"数据源: {REPO_BASE}")
     print(f"学科数: {len(SUBJECTS)}")
     mode = '强制更新' if force else '增量更新（>7天 才拉取）'
+    if once:
+        mode += ' | 单次执行模式'
     print(f"模式: {mode}")
     print("=" * 60)
 
     # 立即执行一次
     update_course_data(force=force)
+
+    if once:
+        print("[INFO] --once 模式，更新完成，退出。")
+        sys.exit(0)
 
     # 启动定时调度
     setup_scheduler()

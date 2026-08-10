@@ -10,7 +10,7 @@ import json
 import asyncio
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -102,13 +102,20 @@ sql_prompt = ChatPromptTemplate.from_template(
 - campus_news: id, title, source, category, publish_date, summary, url
 - canteen: id, name, location, opening_hours, phone, category, status
 - library_hours: id, library_name, area, day_of_week, date, open_time, close_time, is_closed
-3. 如果用户在查询信息时，缺少必要信息，则输出：{{"status": "input_required", "message": "请提供更具体的查询条件。"}} ，如示例所示；如果对话历史中信息齐全，则输出纯SQL即可。
-其中，每种意图必要的信息有：
-- campus_event: category (类别), start_time (日期范围)。
-- campus_news: 关键词或日期范围（可选，默认查最近新闻）。
-- canteen: 餐厅名称或位置关键词（可选，默认查全部）。
-- library_hours: library_name (图书馆名), day_of_week (星期几)（可选，默认查全部）。
-4. 按要求输出两行数据或一行数据即可，不需要输出其他内容。
+3. 重要：始终生成默认SQL，只有用户意图完全无法识别（如"你好""谢谢"）时才退回 input_required。即使模糊查询也要生成SQL。
+4. 按要求输出两行数据即可，不需要输出其他内容。
+
+中文地名 → 英文关键词映射（用于 SQL LIKE）：
+  崇基/崇基学院=Chung Chi, 新亚/新亚书院=New Asia, 联合/联合书院=United College,
+  善衡=S.H. Ho, 逸夫/逸夫书院=Shaw, 伍宜孙=Wu Yee Sun, 晨兴=Morningside,
+  和声=Lee Woo Sing, 敬文=C.W. Chu, 大学图书馆=University Library,
+  法律图书馆=Law Library, 医学图书馆=Medical Library, 建筑学图书馆=Architecture Library
+
+默认查询策略（无明确条件时直接用）：
+- campus_event: ORDER BY start_time DESC LIMIT 10（最近的10个活动）
+- campus_news:  ORDER BY publish_date DESC LIMIT 10（最近的10条新闻）
+- canteen:      WHERE status = 'Open'（全部营业中餐厅）
+- library_hours:根据当前日期计算星期几（周一=Mon,...周日=Sun），用 day_of_week 过滤；无条件则查全部
 
 示例：
 - 对话: user: 最近有什么校园活动 讲座
@@ -116,17 +123,32 @@ sql_prompt = ChatPromptTemplate.from_template(
 {{"type": "campus_event"}}
 SELECT id, event_name, organizer, venue, start_time, end_time, category, total_capacity, registered, description FROM campus_events WHERE category = 'Talk' AND start_time >= '2026-08-10'
 
+- 对话: user: 最近有什么活动
+输出:
+{{"type": "campus_event"}}
+SELECT id, event_name, organizer, venue, start_time, end_time, category, total_capacity, registered, description FROM campus_events ORDER BY start_time DESC LIMIT 10
+
 - 对话: user: 最近有什么新闻
 输出:
 {{"type": "campus_news"}}
 SELECT id, title, source, category, publish_date, summary, url FROM campus_news ORDER BY publish_date DESC LIMIT 10
 
+- 对话: user: 有什么餐厅
+输出:
+{{"type": "canteen"}}
+SELECT id, name, location, opening_hours, phone, category, status FROM canteen WHERE status = 'Open'
+
 - 对话: user: 崇基学院有什么餐厅
 输出:
 {{"type": "canteen"}}
-SELECT id, name, location, opening_hours, phone, category, status FROM canteen WHERE location LIKE '%Chung Chi%' AND status = 'Open'
+SELECT id, name, location, opening_hours, phone, category, status FROM canteen WHERE (location LIKE '%Chung Chi%' OR name LIKE '%Chung Chi%') AND status = 'Open'
 
-- 对话: user: 大学图书馆今天几点开门
+- 对话: user: 大学图书馆今天开门吗（当前日期 2026-08-10 是 Monday → Mon）
+输出:
+{{"type": "library_hours"}}
+SELECT id, library_name, area, day_of_week, date, open_time, close_time, is_closed FROM library_hours WHERE library_name LIKE '%University Library%' AND day_of_week = 'Mon' AND is_closed = 0
+
+- 对话: user: 大学图书馆几点开门
 输出:
 {{"type": "library_hours"}}
 SELECT id, library_name, area, day_of_week, date, open_time, close_time, is_closed FROM library_hours WHERE library_name LIKE '%University Library%'
@@ -146,7 +168,7 @@ SELECT id, library_name, area, day_of_week, date, open_time, close_time, is_clos
 async def get_facility_info(sql):
     try:
         # 启动 MCP server，通过streamable建立连接
-        async with streamablehttp_client("http://127.0.0.1:8001/mcp") as (read, write, _):
+        async with streamable_http_client("http://127.0.0.1:8001/mcp") as (read, write):
             # 使用读写通道创建 MCP 会话
             async with ClientSession(read, write) as session:
                 try:
