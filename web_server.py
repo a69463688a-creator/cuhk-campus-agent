@@ -21,11 +21,12 @@ from typing import Optional, Dict, List
 import pytz
 import requests
 import mysql.connector
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from starlette.websockets import WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from python_a2a import AgentNetwork, Message, TextContent, MessageRole, Task
 from langchain_openai import ChatOpenAI
 
@@ -175,9 +176,23 @@ async def check_and_refresh_data():
 
 # ============ 请求模型 ============
 class QueryRequest(BaseModel):
-    query: str
-    source_filter: Optional[str] = None  # 意图过滤
-    session_id: Optional[str] = None
+    query: str = Field(..., min_length=1, max_length=500,
+                       description="用户查询，1-500字符")
+    source_filter: Optional[str] = Field(None, max_length=50,
+                                         description="意图过滤")
+    session_id: Optional[str] = Field(None, max_length=64,
+                                      description="会话ID")
+
+    @field_validator('query')
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        """清理输入：去除首尾空白，移除 \x00 等控制字符"""
+        import re
+        v = v.strip()
+        v = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', v)
+        if not v:
+            raise ValueError('查询内容不能为空')
+        return v
 
 
 # ============ 工具函数 ============
@@ -197,8 +212,16 @@ def get_session(session_id: str) -> List[dict]:
 
 
 # ============ 意图识别 ============
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((Exception,)),
+    before_sleep=lambda retry_state: logger.warning(
+        f"LLM 意图识别重试 {retry_state.attempt_number}/3..."
+    )
+)
 async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
-    """调用 LLM 进行多意图识别（异步）"""
+    """调用 LLM 进行多意图识别（异步），自动重试最多 3 次"""
     chain = SmartCampusPrompts.intent_prompt() | llm
     current_date = datetime.now(TZ).strftime('%Y-%m-%d')
     context_lines = '\n'.join(conversation_history.split("\n")[-6:])
@@ -278,8 +301,16 @@ def format_weather_for_prompt(data: dict) -> str:
 
 
 # ============ A2A Agent 调用 ============
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception_type((Exception,)),
+    before_sleep=lambda retry_state: logger.warning(
+        f"A2A Agent 调用重试 {retry_state.attempt_number}/2..."
+    )
+)
 async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> str:
-    """调用 A2A Agent 并返回原始结果文本"""
+    """调用 A2A Agent 并返回原始结果文本（自动重试最多 2 次）"""
     try:
         agent = agent_network.get_agent(agent_name)
         chat_history = '\n'.join(conversation_history.split("\n")[-7:-1]) + f'\nUser: {query_str}'
@@ -513,7 +544,43 @@ async def stream_api(websocket: WebSocket):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(TZ).isoformat()}
+    """增强健康检查：Web 自身 + A2A Agent + MCP Server 连通性"""
+    import asyncio as _asyncio
+    import httpx as _httpx
+
+    components = {"web_server": "ok"}
+
+    # 检查 A2A Agent 可达性（1.5s 超时）
+    for name, port in [("CourseQueryAssistant", 5005), ("FacilityQueryAssistant", 5006)]:
+        try:
+            async with _httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"http://127.0.0.1:{port}/.well-known/agent-card.json",
+                    timeout=1.5
+                )
+                components[name] = "ok" if resp.status_code == 200 else f"status:{resp.status_code}"
+        except Exception:
+            components[name] = "unreachable"
+
+    # 检查 MySQL 连通性
+    try:
+        conn = mysql.connector.connect(
+            host=conf.host, user=conf.user,
+            password=conf.password, database=conf.database,
+            charset="utf8mb4", connection_timeout=2
+        )
+        conn.close()
+        components["mysql"] = "ok"
+    except Exception as e:
+        components["mysql"] = f"error:{str(e)[:60]}"
+
+    # 判断总体状态
+    all_ok = all(v == "ok" for v in components.values())
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "timestamp": datetime.now(TZ).isoformat(),
+        "components": components,
+    }
 
 
 # ============ 主入口 ============

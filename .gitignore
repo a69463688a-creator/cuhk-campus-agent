@@ -26,8 +26,7 @@ page-snapshot.txt
 # Session config (contains paths)
 .claude/
 
-# Config with secrets
-config.py
+# Config (no longer contains secrets; they live in .env)
 
 # Streamlit
 .streamlit/

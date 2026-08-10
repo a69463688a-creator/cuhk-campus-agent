@@ -582,7 +582,28 @@
                 await loadHistory();
             } catch (e) {
                 removeTypingIndicator();
-                addMessage('system', `❌ 发生错误: ${e.message}`);
+                const msgEl = addMessage('system',
+                    `❌ ${e.message.includes('Failed to fetch') || e.message.includes('NetworkError')
+                        ? '网络连接失败，请检查服务是否启动'
+                        : `发生错误: ${e.message}`}`);
+                // 添加重试按钮到气泡中
+                if (msgEl) {
+                    const bubble = msgEl.querySelector('.bubble');
+                    if (bubble) {
+                        const retryBtn = document.createElement('button');
+                        retryBtn.textContent = '🔄 点击重试';
+                        retryBtn.style.cssText = 'margin-top:10px;padding:6px 16px;border:1px solid var(--primary);' +
+                            'border-radius:6px;background:var(--primary-bg);color:var(--primary);cursor:pointer;font-size:13px;transition:all .2s;';
+                        retryBtn.onmouseenter = () => { retryBtn.style.background = 'var(--primary)'; retryBtn.style.color = '#fff'; };
+                        retryBtn.onmouseleave = () => { retryBtn.style.background = 'var(--primary-bg)'; retryBtn.style.color = 'var(--primary)'; };
+                        retryBtn.onclick = () => {
+                            msgEl.remove();
+                            $input.value = query;
+                            sendMessage();
+                        };
+                        bubble.appendChild(retryBtn);
+                    }
+                }
             } finally {
                 isResponseInProgress = false;
                 $sendBtn.disabled = false;
@@ -622,7 +643,8 @@
                 };
 
                 socket.onerror = () => {
-                    bubble.innerHTML += '<p style="color:#ef4444;">[连接错误]</p>';
+                    bubble.innerHTML += '<p style="color:#ef4444;">[连接错误，请稍后重试]</p>' +
+                        '<button onclick="location.reload()" style="margin-top:8px;padding:6px 16px;border:1px solid var(--primary);border-radius:6px;background:var(--primary-bg);color:var(--primary);cursor:pointer;font-size:13px;">🔄 刷新页面</button>';
                     reject(new Error('WebSocket connection error'));
                 };
                 socket.onclose = () => resolve();
