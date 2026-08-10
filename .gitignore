@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+logs/
+
+# Environment
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+.playwright-mcp/
+page-snapshot.txt
+
+# Session config (contains paths)
+.claude/
+
+# Config with secrets
+config.py
+
+# Streamlit
+.streamlit/
