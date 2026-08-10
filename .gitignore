@@ -31,3 +31,6 @@ config.py
 
 # Streamlit
 .streamlit/
+
+# Project documentation (interview prep, contains architectural details)
+PROJECT_DOC.md
