@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+
+# Claude
+.claude
+
+# 环境变量（凭证不入镜像）
+.env
+*.env
+!.env.example
+
+# 日志
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+venv/
+
+# Playwright
+.playwright-mcp/
+page-snapshot.txt
+
+# 文档
+PROJECT_DOC.md
+
+# Windows 脚本
+*.bat
+*.ps1
+
+# Streamlit 旧版
+app.py
+config.example.py
+
+# 测试
+test/
+
+# macOS
+.DS_Store
+
+# 项目无关
+paper-rag/

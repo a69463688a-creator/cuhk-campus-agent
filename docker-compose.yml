@@ -1,0 +1,51 @@
+# SmartCampus — CUHK 校园生活助手 Docker 编排
+# 启动: docker compose up -d
+# 日志: docker compose logs -f app
+# 停止: docker compose down
+
+services:
+
+  mysql:
+    image: mysql:8.0
+    container_name: smartcampus-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123456}
+      MYSQL_DATABASE: cuhk_campus
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3308:3306"                 # 避免与 PaperRag MySQL (3307) 冲突
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/docker_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: smartcampus-app
+    ports:
+      - "8100:8100"                 # Web 前端（不与 PaperRag 8080 冲突）
+    environment:
+      # 数据库（指向 compose 中的 mysql 服务）
+      DB_HOST: mysql
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-123456}
+      DB_NAME: cuhk_campus
+      # LLM（从宿主机 .env 读取）
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      # Web
+      HOST: "0.0.0.0"
+      PORT: "8100"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
