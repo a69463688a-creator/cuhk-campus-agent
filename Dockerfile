@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 源代码
 COPY . .
 
+# Python 路径
+ENV PYTHONPATH=/app
+
 # 暴露端口
 EXPOSE 8100
 

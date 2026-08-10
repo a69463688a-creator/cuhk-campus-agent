@@ -7,15 +7,10 @@
 描述: 校园设施 MCP 服务器 —— 基于 campus_events/campus_news/canteen/library_hours
       表提供设施查询工具（端口 8001）
 """
-import mysql.connector
-import json
-from datetime import date, datetime, timedelta
-from decimal import Decimal
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from app.config import Config
 from app.logging import logger
-from data.format import DateEncoder, default_encoder
 from data.database import FacilityService
 
 conf = Config()
@@ -23,11 +18,10 @@ conf = Config()
 
 # 创建设施查询MCP服务器
 def create_facility_mcp_server():
-    facility_mcp = FastMCP(
+    facility_mcp = MCPServer(
         name="FacilityTools",
         instructions="校园设施查询工具，基于 campus_events, campus_news, canteen, library_hours 表。只支持查询。",
         log_level="ERROR",
-        host="127.0.0.1", port=8001
     )
 
     service = FacilityService()
@@ -46,7 +40,7 @@ def create_facility_mcp_server():
 
     try:
         print("服务器已启动，请访问 http://127.0.0.1:8001/mcp")
-        facility_mcp.run(transport="streamable-http")
+        facility_mcp.run(transport="streamable-http", host="127.0.0.1", port=8001)
     except Exception as e:
         print(f"服务器启动失败: {e}")
 

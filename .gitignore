@@ -26,9 +26,5 @@ page-snapshot.txt
 # Session config (contains paths)
 .claude/
 
-# Legacy (old Streamlit app, kept for reference)
-app.py
-config.example.py
-
 # Project documentation (interview prep, contains architectural details)
 PROJECT_DOC.md

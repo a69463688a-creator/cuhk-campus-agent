@@ -4,6 +4,49 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 ---
 
+## [v3.2.0] — 2026-08-10
+
+### 🐳 Docker 容器化部署 + 代码清理
+
+#### Docker 部署（新增）
+- `Dockerfile` — Python 3.11-slim 镜像，`ENV PYTHONPATH=/app`，健康检查
+- `docker-compose.yml` — MySQL 8.0 + App 双服务编排，端口 8100/3308（避免与 PaperRag 冲突）
+- `docker-entrypoint.py` — 容器启动编排器：MySQL 等待 → MCP → Agent → Web，SIGTERM 优雅关闭
+- `.dockerignore` — 排除 `.git`/`.env`/`logs`/测试/旧版文件
+- `sql/docker_init.sql` — 合并 DDL + 种子数据的 Docker 初始化脚本
+
+#### MCP v2.0.0 完整适配
+- `mcp_servers/course_server.py` — `FastMCP` → `MCPServer`，transport 参数移至 `run()`
+- `mcp_servers/facility_server.py` — 同上，同时移除 7 个未使用导入
+- `docker-entrypoint.py` — HTTP 健康检查适配 MCP v2.0.0（接受 400/405/406）
+
+#### 数据库修复
+- `course_info` 表新增 `created_at` 列（修复数据新鲜度检查 `Unknown column` 错误）
+- `campus_news` 表移除未使用的 `image_url` 列
+- `agents/facility_agent.py` 嵌入式 schema 同步移除 `image_url`
+
+#### 爬虫 Docker 兼容
+- 全部 5 个爬虫 `db_config` 改为读取 `DB_HOST`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` 环境变量
+- `--force --once` 模式下退出后不再进入定时循环
+
+#### 代码清理（删除 12 个文件）
+- **遗留文件**：`app.py`（Streamlit 旧版）、`config.example.py`（旧配置模板）
+- **死测试**：`test/test_order_agent_server.py`（测试已删除的 BookingAgent）、`test/test_weather_mcp_server.py`（MCP v1.x API 不可用）
+- **冗余 SQL**：`sql/insert.sql`、`sql/insert2.sql`、`sql/sql_data.sql`（全部被 `docker_init.sql` 包含）
+- **残留文件**：`page-snapshot.txt`
+- **所有 `__pycache__/` 目录**
+
+#### 死代码移除
+- `app/config.py`：`get_mysql_config()` 方法、`url_cuhk` 字段、模块级 `env` 变量、`__main__` 块
+- `spiders/course.py`：`from collections import defaultdict`
+- `requirements.txt`：`streamlit`、`aiohttp`、`lxml`、`sse-starlette`（减少 4 个无用依赖）
+
+#### 文档
+- `README.md` — 全面重写，反映 v3.2 架构
+- `CHANGELOG.md` — 本条目
+
+---
+
 ## [v3.1.0] — 2026-08-10
 
 ### 🏗️ 项目重构：目录结构工业标准化

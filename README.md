@@ -1,222 +1,237 @@
-# SmartCampus — CUHK校园生活智能助手
+# SmartCampus — CUHK 校园生活智能助手
 
-基于 **A2A（Agent-to-Agent）协议** 与 **MCP（Model Context Protocol）** 的多智能体校园服务系统，专为香港中文大学（CUHK）学生设计，提供课程查询、自习室/图书馆座位检索、校园活动发现及在线预约等一站式服务。
+基于 **A2A（Agent-to-Agent）协议** 与 **MCP（Model Context Protocol v2.0）** 的多智能体校园服务系统，专为香港中文大学（CUHK）学生设计，提供课程查询、校园活动、餐厅、图书馆开放时间和新闻等一站式服务。
 
-## 项目概览
+## 系统架构
 
 ```
-用户输入（自然语言）
+用户输入（自然语言 / Web UI）
     │
     ▼
-┌──────────────────────────────────────┐
-│   Frontend: Streamlit Web / CLI      │
-│   • 意图识别（LLM: DeepSeek-v4-flash） │
-│   • 多意图并行路由                     │
-│   • 结果总结与推荐                     │
-└──────────────────────────────────────┘
-    │ A2A Protocol
+┌──────────────────────────────────────────┐
+│  app/server.py  —  FastAPI Web 网关 (:8100) │
+│  • 意图识别（LLM: DeepSeek-v4-flash）        │
+│  • 天气查询（Open-Meteo 直连）                │
+│  • 结果总结与推荐                              │
+└──────────────────────────────────────────┘
+    │ A2A Protocol (python-a2a v0.5.10)
     ▼
-┌──────────────────────────────────────┐
-│       A2A Agent 层（3 个 Agent）       │
-│                                      │
-│  CourseQueryAssistant  :5005         │
-│  FacilityQueryAssistant :5006        │
-│  BookingAssistant      :5007         │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│         A2A Agent 层（2 个 Agent）          │
+│                                          │
+│  CourseQueryAssistant   :5005            │
+│  └─ 课程查询（课程代码/教师/时间/地点）        │
+│                                          │
+│  FacilityQueryAssistant  :5006           │
+│  └─ 活动/新闻/餐厅/图书馆 4 合 1            │
+└──────────────────────────────────────────┘
     │ MCP Protocol (streamable-http)
     ▼
-┌──────────────────────────────────────┐
-│       MCP Server 层（3 个 Server）     │
-│                                      │
-│  Course MCP   :8002  → course_info   │
-│  Facility MCP :8001  → study_rooms   │
-│                     → library_seats  │
-│                     → campus_events  │
-│  Booking MCP  :8003  → 预约/报名操作   │
-└──────────────────────────────────────┘
-    │ MySQL Connector
+┌──────────────────────────────────────────┐
+│        MCP Server 层（2 个 Server）         │
+│                                          │
+│  Course MCP   :8002  → course_info       │
+│  Facility MCP :8001  → campus_events      │
+│                      → campus_news       │
+│                      → canteen           │
+│                      → library_hours     │
+└──────────────────────────────────────────┘
+    │ mysql-connector-python
     ▼
-┌──────────────────────────────────────┐
-│   MySQL 8.0  (cuhk_campus)           │
-│   4 张业务表 + 模拟种子数据              │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│     MySQL 8.0  (cuhk_campus / 5 张表)      │
+└──────────────────────────────────────────┘
 ```
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| **LLM** | DeepSeek-v4-flash（通过 LangChain `ChatOpenAI` 兼容接口） |
-| **Agent 协议** | `python-a2a` — Google A2A 协议的 Python 实现 |
-| **工具协议** | `mcp` + `FastMCP` — Anthropic MCP，streamable-http 传输 |
-| **前端** | Streamlit（Web UI）+ 命令行交互（CLI） |
-| **数据库** | MySQL 8.0.12，utf8mb4 |
-| **Python** | 3.12+，conda 环境 |
+| **LLM** | DeepSeek-v4-flash（LangChain `ChatOpenAI` 兼容接口，tenacity 指数退避重试） |
+| **Agent 协议** | `python-a2a` v0.5.10 — Google A2A 协议的 Python 实现 |
+| **工具协议** | `mcp` v2.0.0 — `MCPServer` + `streamable-http` 传输 |
+| **Web 框架** | FastAPI + Uvicorn + WebSocket 流式响应 |
+| **数据库** | MySQL 8.0，utf8mb4，5 张业务表 |
+| **爬虫** | requests + BeautifulSoup4 + schedule 定时调度 |
+| **部署** | Docker Compose（MySQL + App 双容器） |
 
 ## 项目结构
 
 ```
 SmartCampus/
-├── app.py                     # Streamlit Web 前端（主界面 + Agent Card 面板）
-├── main.py                    # CLI 命令行交互入口
-├── config.py                  # 全局配置（LLM、MySQL、意图→Agent 映射）
-├── main_prompts.py            # LLM Prompt 模板（意图识别/总结/推荐）
-├── create_logger.py           # 日志工具
-├── requirements.txt           # Python 依赖
+├── app/                         # 应用核心层
+│   ├── server.py                # FastAPI Web 网关（:8100）
+│   ├── cli.py                   # CLI 命令行交互入口
+│   ├── config.py                # 全局配置（.env 驱动）
+│   ├── prompts.py               # LLM Prompt 模板
+│   └── logging.py               # 日志系统
 │
-├── mcp_server/                # MCP 服务器层
-│   ├── mcp_weather_server.py  # Course MCP（端口 8002）— 课程查询工具
-│   ├── mcp_ticket_server.py   # Facility MCP（端口 8001）— 设施查询工具
-│   └── mcp_order_server.py    # Booking MCP（端口 8003）— 预约/报名工具
+├── agents/                      # A2A Agent 层
+│   ├── course_agent.py          # 课程查询 Agent（:5005）
+│   └── facility_agent.py        # 设施查询 Agent（:5006）
 │
-├── a2a_server/                # A2A Agent 层
-│   ├── weather_server.py      # CourseQueryAssistant（端口 5005）
-│   ├── ticket_server.py       # FacilityQueryAssistant（端口 5006）
-│   └── order_server.py        # BookingAssistant（端口 5007）
+├── mcp_servers/                 # MCP 工具服务器层
+│   ├── course_server.py         # 课程 MCP（:8002）
+│   └── facility_server.py       # 设施 MCP（:8001）
 │
-├── query_data/                # 数据访问层
-│   └── query1.py              # FacilityService — MySQL 连接与查询封装
+├── data/                        # 数据访问层
+│   ├── database.py              # FacilityService — MySQL 封装
+│   └── format.py                # JSON 序列化（DateEncoder）
 │
-├── sql/                       # 数据库脚本
-│   ├── sql_data.sql           # DDL（4张表：课程/自习室/图书馆/活动）
-│   ├── insert.sql             # 课程种子数据（14门CUHK CS真实课程）
-│   └── insert2.sql            # 设施种子数据（自习室/图书馆/活动）
+├── spiders/                     # 数据采集爬虫
+│   ├── course.py                # 课程数据（GitHub Raw 同步）
+│   ├── events.py                # 校园活动（CPR AJAX API）
+│   ├── news.py                  # 校园新闻（CPR 新闻中心）
+│   ├── canteen.py               # 餐厅信息（CUHK 住宿页面）
+│   └── library.py               # 图书馆开放时间（基线数据）
 │
-├── utils/                     # 工具
-│   ├── format.py              # JSON 序列化编解码器
-│   ├── spider_campus.py       # CUHK校园活动定时采集器（CPR AJAX API）
-│   └── spider_course.py       # CUHK课程数据采集器（RES 课程目录）
+├── sql/
+│   └── docker_init.sql          # DDL + 种子数据（Docker 自动导入）
 │
-└── test/                      # 测试脚本
-    ├── test_weather_mcp_server.py   # Course MCP 连通性测试
-    ├── test_weather_agent_server.py # CourseQueryAssistant 测试
-    ├── test_order_agent_server.py   # BookingAssistant 测试
-    └── weather_api_test.py          # CUHK 公开页面连通性测试
+├── static/                      # Web 前端静态文件
+├── run_web.py                   # Web 服务启动入口
+├── run_cli.py                   # CLI 启动入口
+├── run_spiders.py               # 爬虫统一入口（runall）
+├── Dockerfile                   # Docker 镜像构建
+├── docker-compose.yml           # Docker 编排
+├── docker-entrypoint.py         # 容器启动编排器
+├── requirements.txt             # Python 依赖
+├── .env.example                 # 环境变量模板
+├── CHANGELOG.md                 # 更新日志
+└── README.md
 ```
 
-## 核心架构详解
+## 数据库设计
 
-### 1. 意图识别与路由
+数据库 `cuhk_campus` 包含 5 张表：
 
-用户输入经 LLM 进行多意图识别，支持的意图包括：
+| 表名 | 用途 | 数据来源 |
+|------|------|---------|
+| `course_info` | 课程代码、名称、教师、时间、地点、学分、容量 | 爬虫（GitHub 课程规划器） |
+| `campus_events` | 活动名称、主办方、场地、时间、类别、报名 | 爬虫（CPR AJAX API） |
+| `campus_news` | 新闻标题、来源、类别、发布日期、摘要、URL | 爬虫（CPR 新闻中心） |
+| `canteen` | 餐厅名称、位置、营业时间、电话、类别、状态 | 爬虫（CUHK 住宿页面） |
+| `library_hours` | 图书馆名称、区域、星期、日期、开放/关闭时间 | 内置基线数据（8 个图书馆） |
+
+## 意图路由
 
 | 意图 | 描述 | 路由目标 |
 |------|------|---------|
-| `course` | 课程查询（上课时间/地点/教师） | CourseQueryAssistant |
-| `study_room` | 自习室查询 | FacilityQueryAssistant |
-| `library_seat` | 图书馆座位查询 | FacilityQueryAssistant |
+| `course` | 课程查询（代码/教师/时间/地点） | CourseQueryAssistant |
 | `campus_event` | 校园活动查询 | FacilityQueryAssistant |
-| `booking` | 自习室预约/座位预约/活动报名 | BookingAssistant |
-| `recommend` | 课程/活动推荐 | LLM 直接生成 |
+| `campus_news` | 校园新闻查询 | FacilityQueryAssistant |
+| `canteen` | 餐厅信息查询 | FacilityQueryAssistant |
+| `library_hours` | 图书馆开放时间查询 | FacilityQueryAssistant |
+| `weather` | 天气查询 | 直连 Open-Meteo API |
 
-系统支持单次查询中包含多个意图（如"查看CSCI2100课程信息，并查一下今天大学图书馆的座位"），自动并行路由到对应 Agent 并聚合结果。
-
-### 2. A2A Agent 工作机制
-
-每个 Agent 是一个独立的 Python 服务，具备以下能力：
-
-- **CourseQueryAssistant (5005)**：接收课程查询 → 调用 Course MCP（8002）获取 course_info 数据 → LLM 将 SQL 结果总结为自然语言
-- **FacilityQueryAssistant (5006)**：接收设施查询 → 调用 Facility MCP（8001）获取 study_rooms/library_seats/campus_events 数据 → LLM 总结
-- **BookingAssistant (5007)**：接收预约请求 → 先向 FacilityQueryAssistant 查询可用性 → 再调用 Booking MCP（8003）执行预约/报名
-
-Agent 对外暴露 **AgentCard**（技能、描述、地址），由 `python-a2a` 框架管理生命周期。
-
-### 3. MCP Server 设计
-
-MCP 服务器通过 `FastMCP` 框架暴露工具：
-
-- **Course MCP (8002)**：`query_courses(sql)` — 直接执行 SQL 查询 `course_info` 表
-- **Facility MCP (8001)**：`query_facilities(sql)` — 支持跨 `study_rooms`、`library_seats`、`campus_events` 三表查询
-- **Booking MCP (8003)**：`book_study_room()`、`book_library_seat()`、`register_event()` — 预约操作（当前为模拟模式）
-
-所有 MCP 服务器均具备 MySQL 自动重连机制，处理长时间空闲导致的连接断开问题。
-
-### 4. 数据库设计
-
-数据库 `cuhk_campus` 包含 4 张核心表：
-
-- **course_info**：课程代码、名称、院系、教师、上课时间/地点、学分、容量、类别、简介
-- **study_rooms**：教学楼、教室编号、日期、时间段、容量、可用座位、设备（投影仪/空调）
-- **library_seats**：图书馆名称、楼层、区域、日期、时间段、总座位、可用座位、电源/静音区标识
-- **campus_events**：活动名称、主办方、场地、时间、类别、容量、已报名数、简介
-
-种子数据使用真实的 CUHK 教学楼（YIA、LSK、SC、MMW、HSH）、图书馆（University Library、Chung Chi、New Asia、United College、Law Library）。
-课程数据由 `spider_course.py` 从 [another-cuhk-course-planner](https://github.com/EagleZhen/another-cuhk-course-planner) 的预抓取数据中同步（2026-27 学年，34 个学科，2,149 门课程），校园活动数据由 `spider_campus.py` 从 CUHK CPR AJAX API 实时获取。
-
-## 快速启动
-
-### 环境要求
-
-- Python 3.12+
-- MySQL 8.0+
-- Conda（推荐）
-
-### 1. 创建环境并安装依赖
-
-```bash
-conda create -n lang_env python=3.12
-conda activate lang_env
-pip install -r requirements.txt
-```
-
-### 2. 初始化数据库
-
-```bash
-mysql -u root -p < sql/sql_data.sql
-mysql -u root -p -D cuhk_campus < sql/insert.sql
-mysql -u root -p -D cuhk_campus < sql/insert2.sql
-```
-
-### 3. 配置 API Key
-
-编辑 `config.py`，设置 DeepSeek API Key：
-```python
-self.api_key = 'your-deepseek-api-key'
-```
-
-### 4. 启动服务（共 6 个后台进程 + 1 个前端）
-
-```bash
-# 设置项目路径
-export PYTHONPATH="E:/Workspace/agent_project/SmartCampus"
-
-# 1) 启动 3 个 MCP Server
-nohup python mcp_server/mcp_weather_server.py > logs/mcp_course.log 2>&1 &   # 8002
-nohup python mcp_server/mcp_ticket_server.py > logs/mcp_facility.log 2>&1 &  # 8001
-nohup python mcp_server/mcp_order_server.py > logs/mcp_booking.log 2>&1 &    # 8003
-
-# 2) 启动 3 个 A2A Agent
-nohup python a2a_server/weather_server.py > logs/a2a_course.log 2>&1 &       # 5005
-nohup python a2a_server/ticket_server.py > logs/a2a_facility.log 2>&1 &      # 5006
-nohup python a2a_server/order_server.py > logs/a2a_booking.log 2>&1 &        # 5007
-
-# 3) 启动 Streamlit 前端
-streamlit run app.py   # http://localhost:8501
-
-# 或使用 CLI 模式
-python main.py
-```
-
-### 5. 验证服务
-
-```bash
-# 验证 MCP Server
-curl -s http://127.0.0.1:8002/mcp -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
-```
-
-## 服务端口一览
+## 服务端口
 
 | 服务 | 端口 | 协议 |
 |------|------|------|
-| Streamlit Web UI | 8501 | HTTP |
-| CourseQueryAssistant (A2A) | 5005 | A2A/JSON |
-| FacilityQueryAssistant (A2A) | 5006 | A2A/JSON |
-| BookingAssistant (A2A) | 5007 | A2A/JSON |
+| Web 前端 | 8100 | HTTP (FastAPI) |
+| CourseQueryAssistant | 5005 | A2A/JSON |
+| FacilityQueryAssistant | 5006 | A2A/JSON |
 | Course MCP | 8002 | MCP (streamable-http) |
 | Facility MCP | 8001 | MCP (streamable-http) |
-| Booking MCP | 8003 | MCP (streamable-http) |
+| MySQL | 3308→3306 | MySQL Protocol |
+
+> 端口 8100/3308 避免与 [PaperRag](https://github.com/a69463688a-creator/) 项目（8080/3307）冲突。
+
+---
+
+## 快速启动
+
+### Docker（推荐）
+
+```bash
+# 1. 创建 .env 文件
+cp .env.example .env
+# 编辑 .env 填入 DEEPSEEK_API_KEY 和 DB_PASSWORD
+
+# 2. 一键启动
+docker compose up -d
+
+# 3. 初始化爬虫数据（首次）
+docker exec -e PYTHONPATH=/app smartcampus-app python spiders/library.py --force --once
+
+# 4. 访问
+# Web UI:  http://localhost:8100
+# API 文档: http://localhost:8100/docs
+# 健康检查: http://localhost:8100/health
+```
+
+### 本地开发
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+
+# 2. 初始化数据库
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS cuhk_campus CHARACTER SET utf8mb4"
+mysql -u root -p -D cuhk_campus < sql/docker_init.sql
+
+# 3. 配置环境变量
+cp .env.example .env
+# 编辑 .env 填入真实值
+
+# 4. 启动（需 5 个终端窗口）
+python mcp_servers/course_server.py      # 终端 1: Course MCP :8002
+python mcp_servers/facility_server.py    # 终端 2: Facility MCP :8001
+python agents/course_agent.py            # 终端 3: Course Agent :5005
+python agents/facility_agent.py          # 终端 4: Facility Agent :5006
+python run_web.py                        # 终端 5: Web Server :8100
+```
+
+### CLI 交互模式
+
+```bash
+python run_cli.py
+```
+
+### 手动运行爬虫
+
+```bash
+# 统一入口
+python run_spiders.py --all              # 全部爬取
+python run_spiders.py --spider news      # 指定爬虫
+
+# 单独运行
+python spiders/news.py --force --once    # 强制更新 + 单次执行
+python spiders/events.py --force --once
+python spiders/canteen.py --force --once
+python spiders/library.py --force --once
+python spiders/course.py --force --once
+```
+
+---
+
+## API 接口
+
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/` | GET | Web 前端页面 |
+| `/health` | GET | 综合健康检查 |
+| `/api/query` | POST | 非流式查询 `{"query": "..."}` |
+| `/api/stream` | WebSocket | 流式查询 |
+| `/api/create_session` | POST | 创建会话 |
+| `/api/history/{session_id}` | GET | 获取对话历史 |
+| `/api/sources` | GET | 数据源状态 |
+
+---
+
+## 数据新鲜度
+
+系统启动时自动检查 5 张表的数据新鲜度：
+
+| 数据表 | 刷新阈值 | 自动刷新 |
+|--------|---------|---------|
+| campus_events | 24h | ✅ |
+| campus_news | 24h | ✅ |
+| canteen | 168h (7天) | ❌ 手动 |
+| library_hours | 168h (7天) | ❌ 手动 |
+| course_info | 168h (7天) | ❌ 手动 |
+
+---
 
 ## 许可
 

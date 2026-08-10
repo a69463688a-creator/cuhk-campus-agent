@@ -16,11 +16,11 @@
       本脚本直接使用其预抓取的 JSON 文件，通过 GitHub Raw 访问。
 """
 import json
+import os
 import re
 import time
 import sys
 from datetime import datetime, timedelta
-from collections import defaultdict
 
 import mysql.connector
 import schedule
@@ -31,10 +31,10 @@ import requests
 TZ = pytz.timezone('Asia/Shanghai')
 
 db_config = {
-    "host": "localhost",
-    "user": "root",
-    "password": "123456",
-    "database": "cuhk_campus",
+    "host": os.getenv("DB_HOST", "localhost"),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", "123456"),
+    "database": os.getenv("DB_NAME", "cuhk_campus"),
     "charset": "utf8mb4"
 }
 

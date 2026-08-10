@@ -36,10 +36,6 @@ PROJECT_DOC.md
 *.bat
 *.ps1
 
-# Streamlit 旧版
-app.py
-config.example.py
-
 # 测试
 test/
 

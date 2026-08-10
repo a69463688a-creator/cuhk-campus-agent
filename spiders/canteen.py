@@ -7,6 +7,7 @@
       从 CUHK 校园住宿页面抓取餐厅数据，解析并写入 canteen 表。
       数据源: https://www.cuhk.edu.hk/english/campus/accommodation.html#canteen_info
 """
+import os
 import re
 import time
 import sys
@@ -22,10 +23,10 @@ from bs4 import BeautifulSoup
 TZ = pytz.timezone('Asia/Shanghai')
 
 db_config = {
-    "host": "localhost",
-    "user": "root",
-    "password": "123456",
-    "database": "cuhk_campus",
+    "host": os.getenv("DB_HOST", "localhost"),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", "123456"),
+    "database": os.getenv("DB_NAME", "cuhk_campus"),
     "charset": "utf8mb4"
 }
 

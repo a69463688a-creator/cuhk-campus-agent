@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS course_info (
     category VARCHAR(30) COMMENT '课程类别（Required/Elective/General）',
     description TEXT COMMENT '课程简介',
     update_time DATETIME COMMENT '数据更新时间',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_course_time (course_code, schedule_day, start_time)
 ) ENGINE=INNODB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='课程信息表';
 
@@ -57,7 +58,6 @@ CREATE TABLE campus_news (
     publish_date DATETIME NOT NULL COMMENT '发布日期',
     summary TEXT COMMENT '新闻摘要',
     url VARCHAR(500) COMMENT '原文链接',
-    image_url VARCHAR(500) COMMENT '封面图URL',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_news (publish_date, title)
 ) COMMENT='校园新闻表';

@@ -58,7 +58,6 @@ CREATE TABLE campus_news (
     publish_date DATETIME NOT NULL COMMENT '发布日期',
     summary TEXT COMMENT '新闻摘要',
     url VARCHAR(500) COMMENT '原文链接',
-    image_url VARCHAR(500) COMMENT '封面图URL',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_news (publish_date, title)
 ) COMMENT='校园新闻表';

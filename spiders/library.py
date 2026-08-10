@@ -9,6 +9,7 @@
       由于页面使用 FullCalendar 动态渲染，采用 Playwright 渲染后提取数据。
       如 Playwright 不可用，使用内置基线数据。
 """
+import os
 import time
 import sys
 from datetime import datetime, date
@@ -21,10 +22,10 @@ import pytz
 TZ = pytz.timezone('Asia/Shanghai')
 
 db_config = {
-    "host": "localhost",
-    "user": "root",
-    "password": "123456",
-    "database": "cuhk_campus",
+    "host": os.getenv("DB_HOST", "localhost"),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", "123456"),
+    "database": os.getenv("DB_NAME", "cuhk_campus"),
     "charset": "utf8mb4"
 }
 

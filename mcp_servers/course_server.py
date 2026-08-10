@@ -11,7 +11,7 @@ import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from app.config import Config
 from app.logging import logger
@@ -72,11 +72,10 @@ class CourseService:
 
 # 创建课程MCP服务器
 def create_course_mcp_server():
-    course_mcp = FastMCP(
+    course_mcp = MCPServer(
         name="CourseTools",
         instructions="课程查询工具，基于 course_info 表。",
         log_level="ERROR",
-        host="127.0.0.1", port=8002
     )
 
     service = CourseService()
@@ -95,7 +94,7 @@ def create_course_mcp_server():
 
     try:
         print("服务器已启动，请访问 http://127.0.0.1:8002/mcp")
-        course_mcp.run(transport="streamable-http")
+        course_mcp.run(transport="streamable-http", host="127.0.0.1", port=8002)
     except Exception as e:
         print(f"服务器启动失败: {e}")
 

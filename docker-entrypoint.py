@@ -21,7 +21,9 @@ def log(msg: str):
 def start_service(name: str, cmd: list[str]) -> subprocess.Popen:
     """后台启动一个服务"""
     log(f"启动 {name}: {' '.join(cmd)}")
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+    env = os.environ.copy()
+    env.setdefault("PYTHONPATH", "/app")
+    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
     PROCS.append(proc)
     return proc
 
@@ -34,12 +36,12 @@ def wait_for_http(url: str, label: str, timeout: int = 60, interval: int = 2) ->
         try:
             req = urllib.request.Request(url, method="GET")
             resp = urllib.request.urlopen(req, timeout=2)
-            if resp.status in (200, 405):  # FastMCP /mcp 返回 405 Method Not Allowed
+            if resp.status in (200, 400, 405, 406):  # MCP /mcp GET 返回 400/405/406
                 log(f"{label} ✅ 就绪 ({resp.status})")
                 return True
         except urllib.error.HTTPError as e:
-            if e.code == 405:
-                log(f"{label} ✅ 就绪 (405)")
+            if e.code in (400, 405, 406):
+                log(f"{label} ✅ 就绪 ({e.code})")
                 return True
         except Exception:
             pass
