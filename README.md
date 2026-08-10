@@ -84,7 +84,7 @@ SmartCampus/
 │
 ├── utils/                     # 工具
 │   ├── format.py              # JSON 序列化编解码器
-│   └── spider_weather.py      # CUHK公开页面数据采集器
+│   └── spider_campus.py        # CUHK校园活动定时采集器（CPR AJAX API）
 │
 └── test/                      # 测试脚本
     ├── test_weather_mcp_server.py   # Course MCP 连通性测试
