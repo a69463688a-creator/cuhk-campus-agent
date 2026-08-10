@@ -103,17 +103,17 @@ def get_session(session_id: str) -> List[dict]:
 
 
 # ============ 意图识别 ============
-def recognize_intent(user_input: str, conversation_history: str) -> tuple:
-    """调用 LLM 进行多意图识别"""
+async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
+    """调用 LLM 进行多意图识别（异步）"""
     chain = SmartCampusPrompts.intent_prompt() | llm
     current_date = datetime.now(TZ).strftime('%Y-%m-%d')
     context_lines = '\n'.join(conversation_history.split("\n")[-6:])
 
-    intent_response = chain.invoke({
+    intent_response = (await chain.ainvoke({
         "conversation_history": context_lines,
         "query": user_input,
         "current_date": current_date
-    }).content.strip()
+    })).content.strip()
 
     # 清理 Markdown 代码块
     intent_response = re.sub(r'^```json\s*|\s*```$', '', intent_response).strip()
@@ -201,7 +201,7 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
 
 
 async def summarize_response(agent_name: str, query_str: str, agent_result: str) -> str:
-    """用 LLM 总结 Agent 返回的原始数据"""
+    """用 LLM 总结 Agent 返回的原始数据（异步）"""
     if agent_name == "CourseQueryAssistant":
         chain = SmartCampusPrompts.summarize_course_prompt() | llm
     elif agent_name == "FacilityQueryAssistant":
@@ -209,7 +209,7 @@ async def summarize_response(agent_name: str, query_str: str, agent_result: str)
     else:
         return agent_result
 
-    return chain.invoke({"query": query_str, "raw_response": agent_result}).content.strip()
+    return (await chain.ainvoke({"query": query_str, "raw_response": agent_result})).content.strip()
 
 
 # ============ 核心处理逻辑（生成器版本，用于 WebSocket 流式） ============
@@ -235,7 +235,7 @@ async def process_query_stream(query: str, session_id: str):
 
     # 意图识别
     try:
-        intents, user_queries, follow_up_message = recognize_intent(query, history_text)
+        intents, user_queries, follow_up_message = await recognize_intent(query, history_text)
     except Exception as e:
         logger.error(f"意图识别失败: {e}")
         error_msg = "抱歉，我暂时无法理解您的问题，请换种方式描述一下？"
@@ -264,13 +264,13 @@ async def process_query_stream(query: str, session_id: str):
                 weather_data = await fetch_weather()
                 weather_text = format_weather_for_prompt(weather_data)
                 chain = SmartCampusPrompts.summarize_weather_prompt() | llm
-                final = chain.invoke({"query": user_queries.get(intent, query), "raw_response": weather_text}).content.strip()
+                final = (await chain.ainvoke({"query": user_queries.get(intent, query), "raw_response": weather_text})).content.strip()
                 responses.append(final)
 
             elif intent == "recommend":
                 # 推荐：LLM 直接生成
                 chain = SmartCampusPrompts.recommend_prompt() | llm
-                final = chain.invoke({"query": user_queries.get(intent, query)}).content.strip()
+                final = (await chain.ainvoke({"query": user_queries.get(intent, query)})).content.strip()
                 responses.append(final)
 
             elif intent in conf.intent:
