@@ -84,7 +84,8 @@ SmartCampus/
 │
 ├── utils/                     # 工具
 │   ├── format.py              # JSON 序列化编解码器
-│   └── spider_campus.py        # CUHK校园活动定时采集器（CPR AJAX API）
+│   ├── spider_campus.py       # CUHK校园活动定时采集器（CPR AJAX API）
+│   └── spider_course.py       # CUHK课程数据采集器（RES 课程目录）
 │
 └── test/                      # 测试脚本
     ├── test_weather_mcp_server.py   # Course MCP 连通性测试
@@ -139,7 +140,8 @@ MCP 服务器通过 `FastMCP` 框架暴露工具：
 - **library_seats**：图书馆名称、楼层、区域、日期、时间段、总座位、可用座位、电源/静音区标识
 - **campus_events**：活动名称、主办方、场地、时间、类别、容量、已报名数、简介
 
-种子数据使用真实的 CUHK 教学楼（YIA、LSK、SC、MMW、HSH）、图书馆（University Library、Chung Chi、New Asia、United College、Law Library）及课程信息（CSCI2100、CSCI3100、CSCI3170、CSCI4180、CSCI4430 等）。
+种子数据使用真实的 CUHK 教学楼（YIA、LSK、SC、MMW、HSH）、图书馆（University Library、Chung Chi、New Asia、United College、Law Library）。
+课程数据由 `spider_course.py` 从 [another-cuhk-course-planner](https://github.com/EagleZhen/another-cuhk-course-planner) 的预抓取数据中同步（2026-27 学年，34 个学科，2,149 门课程），校园活动数据由 `spider_campus.py` 从 CUHK CPR AJAX API 实时获取。
 
 ## 快速启动
 
