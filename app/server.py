@@ -80,7 +80,7 @@ async def startup():
     agent_network.add("CourseQueryAssistant", "http://localhost:5005")
     agent_network.add("FacilityQueryAssistant", "http://localhost:5006")
     logger.info("AgentNetwork 初始化完成：CourseQueryAssistant + FacilityQueryAssistant")
-    logger.info("Web 服务器启动就绪，监听 http://0.0.0.0:8080")
+    logger.info("Web 服务器启动就绪，监听 http://0.0.0.0:8100")
 
     # 后台异步检查数据新鲜度（不阻塞启动）
     asyncio.create_task(check_and_refresh_data())
@@ -586,7 +586,7 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     host = os.getenv('HOST', '0.0.0.0')
-    port = int(os.getenv('PORT', 8080))
+    port = int(os.getenv('PORT', 8100))
     print(f"\n{'='*60}")
     print(f"  SmartCampus Web 服务器 v3.1")
     print(f"  访问地址: http://localhost:{port}")
