@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-文件名: facility_server.py
+文件名: facility_agent.py
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/2/6
 描述: 校园设施查询 A2A Agent 服务器 —— 校园活动/新闻/餐厅/图书馆开放时间（端口 5006）
@@ -17,8 +17,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime
 import pytz
 
-from config import Config
-from create_logger import logger
+from app.config import Config
+from app.logging import logger
 
 conf = Config()
 
@@ -216,52 +216,49 @@ class FacilityQueryServer(A2AServer):
             # 组装链
             chain = self.sql_prompt | self.llm
             # 调用链
-            current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')  # 获取当前日期，格式化为字符串
+            current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
             output = chain.invoke({"conversation": conversation, "current_date": current_date, "table_schema_string": self.schema}).content.strip()
             logger.info(f"原始 LLM 输出: {output}")
 
             # 处理结果，返回字典
             lines = output.split('\n')
             type_line = lines[0].strip()
-            if type_line.startswith('```json'):  # 检查是否以```json开头
-                type_line = lines[1].strip()  # 取下一行为类型行
-                sql_lines = lines[3:-1] if lines[-1].strip() == '```' else lines[3:]  # 提取SQL行，跳过代码块标记
+            if type_line.startswith('```json'):
+                type_line = lines[1].strip()
+                sql_lines = lines[3:-1] if lines[-1].strip() == '```' else lines[3:]
             else:
-                sql_lines = lines[1:] if len(lines) > 1 else []  # 取剩余行为SQL行
+                sql_lines = lines[1:] if len(lines) > 1 else []
 
             # 提取 type 和 SQL
-            if type_line.startswith('{"type":'):  # 如果以{"type":开头
-                query_type = json.loads(type_line)["type"]  # 解析并提取类型
-                sql_query = ' '.join([line.strip() for line in sql_lines if line.strip() and not line.startswith('```')])  # 连接SQL行，过滤空行和代码块
+            if type_line.startswith('{"type":'):
+                query_type = json.loads(type_line)["type"]
+                sql_query = ' '.join([line.strip() for line in sql_lines if line.strip() and not line.startswith('```')])
                 logger.info(f"分类类型: {query_type}, 生成的 SQL: {sql_query}")
-                return {"status": "sql", "type": query_type, "sql": sql_query}  # 返回SQL状态字典，包括类型
-            elif type_line.startswith('{"status": "input_required"'):  # 检查是否为追问JSON
+                return {"status": "sql", "type": query_type, "sql": sql_query}
+            elif type_line.startswith('{"status": "input_required"'):
                 return json.loads(type_line)
-            else:  # 无效格式
+            else:
                 logger.error(f"无效的 LLM 输出格式: {output}")
-                return {"status": "input_required", "message": "无法解析查询类型或SQL，请提供更明确的信息。"}  # 返回默认追问
+                return {"status": "input_required", "message": "无法解析查询类型或SQL，请提供更明确的信息。"}
         except Exception as e:
             logger.error(f"SQL 生成失败: {str(e)}")
-            return {"status": "input_required", "message": "查询无效，请提供查询校园信息的相关信息。"}  # 返回追问JSON
+            return {"status": "input_required", "message": "查询无效，请提供查询校园信息的相关信息。"}
 
     # 处理任务：提取输入，生成SQL，调用MCP，格式化结果
     def handle_task(self, task):
         # 1 提取输入
-        content = (task.message or {}).get("content", {})  # 从消息中获取内容
-        # 提取conversation，即客户端发起的任务中的query语句
+        content = (task.message or {}).get("content", {})
         conversation = content.get("text", "") if isinstance(content, dict) else ""
         logger.info(f"对话历史及用户问题: {conversation}")
 
         try:
             # 2 基于用户问题生成SQL查询
             gen_result = self.generate_sql_query(conversation)
-            # 检查是否需要追问，如果是则添加追问消息后返回任务
             if gen_result["status"] == "input_required":
                 task.status = TaskStatus(state=TaskState.INPUT_REQUIRED,
                                          message={"role": "agent", "content": {"text": gen_result["message"]}})
                 return task
 
-            # 否则则提取SQL查询，并进行MCP调用
             sql_query = gen_result["sql"]
             query_type = gen_result["type"]
             logger.info(f"执行 SQL 查询: {sql_query} (类型: {query_type})")
@@ -272,62 +269,50 @@ class FacilityQueryServer(A2AServer):
             # 4 格式化结果
             response = json.loads(facility_result) if isinstance(facility_result, str) else facility_result
             logger.info(f"MCP 返回: {response}")
-            # 检查响应状态
             if response.get("status") == "success":
-                data = response.get("data", [])  # 提取数据列表
-                response_text = ""  # 初始化响应文本
-                for d in data:  # 遍历每个数据项
-                    if query_type == "campus_event":  # 校园活动类型
+                data = response.get("data", [])
+                response_text = ""
+                for d in data:
+                    if query_type == "campus_event":
                         response_text += f"{d['start_time']} | {d['event_name']} | {d['organizer']} | {d['venue']} | {d['category']} | 已报名:{d['registered']}/{d['total_capacity']}\n"
-                    elif query_type == "campus_news":  # 校园新闻类型
+                    elif query_type == "campus_news":
                         response_text += f"[{d['publish_date']}] {d['title']} | 来源:{d['source']} | 类别:{d['category']}\n摘要: {d.get('summary', '')}\n链接: {d.get('url', '')}\n\n"
-                    elif query_type == "canteen":  # 餐厅类型
+                    elif query_type == "canteen":
                         response_text += f"{d['name']} | {d['location']} | {d['category']} | 营业时间: {d.get('opening_hours', '请参考店内')} | 状态: {d['status']}\n"
-                    elif query_type == "library_hours":  # 图书馆开放时间类型
+                    elif query_type == "library_hours":
                         if d.get('is_closed'):
                             response_text += f"{d['library_name']} {d['area']} | {d['day_of_week']} ({d.get('date','')}) | 闭馆\n"
                         elif d.get('open_time') == '24hrs':
                             response_text += f"{d['library_name']} {d['area']} | {d['day_of_week']} ({d.get('date','')}) | 24小时开放\n"
                         else:
                             response_text += f"{d['library_name']} {d['area']} | {d['day_of_week']} ({d.get('date','')}) | {d.get('open_time','')} - {d.get('close_time','')}\n"
-                if not response_text:  # 检查文本是否为空
+                if not response_text:
                     response_text = "无结果。如需其他条件，请补充。"
 
-                # 设置任务产物为文本部分，并设置任务状态为完成
                 task.artifacts = [{"parts": [{"type": "text", "text": response_text}]}]
                 task.status = TaskStatus(state=TaskState.COMPLETED)
             elif response.get("status") == "no_data":
                 response_text = response.get("message", "请提供更详细的查询条件。")
-
-                # 设置任务状态为输入所需，添加追问消息
                 task.status = TaskStatus(state=TaskState.INPUT_REQUIRED,
                                          message={"role": "agent", "content": {"text": response_text}})
             else:
                 response_text = response.get("message", "查询失败，请重试或提供更多细节。")
-
-                # 设置任务状态为失败，添加错误信息
                 task.status = TaskStatus(state=TaskState.FAILED,
                                          message={"role": "agent", "content": {"text": response_text}})
             return task
-        except Exception as e:  # 捕获异常
+        except Exception as e:
             logger.error(f"查询失败: {str(e)}")
-
-            # 设置任务状态为失败，添加错误信息
             task.status = TaskStatus(state=TaskState.FAILED,
                                      message={"role": "agent",
                                               "content": {"text": f"查询失败: {str(e)} 请重试或提供更多细节。"}})
             return task
 
 if __name__ == "__main__":
-    # 创建并运行服务器
-    # 实例化设施查询服务器
     facility_server = FacilityQueryServer()
-    # 打印服务器信息
     print("\n=== 服务器信息 ===")
     print(f"名称: {facility_server.agent_card.name}")
     print(f"描述: {facility_server.agent_card.description}")
     print("\n技能:")
     for skill in facility_server.agent_card.skills:
         print(f"- {skill.name}: {skill.description}")
-    # 运行服务器
     run_server(facility_server, host="127.0.0.1", port=5006)

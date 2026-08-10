@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-文件名: course_server.py
+文件名: course_agent.py
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/2/4
 描述: 课程查询 A2A Agent 服务器（端口 5005）
@@ -13,12 +13,11 @@ from mcp.client.streamable_http import streamable_http_client
 from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-
-from config import Config
 from datetime import datetime
 import pytz
 
-from create_logger import logger
+from app.config import Config
+from app.logging import logger
 
 conf = Config()
 
@@ -88,7 +87,6 @@ course_info表结构：{table_schema_string}
 )
 
 
-
 # 定义查询函数
 async def get_courses(sql):
     try:
@@ -116,8 +114,8 @@ agent_card = AgentCard(
     description="基于LangChain提供CUHK课程查询服务的助手",
     url="http://localhost:5005",
     version="1.0.0",
-    capabilities={"streaming": True, "memory": True},  # 设置能力：支持流式和内存
-    skills=[  # 定义技能列表
+    capabilities={"streaming": True, "memory": True},
+    skills=[
         AgentSkill(
             name="execute course query",
             description="执行课程查询，返回课程数据库结果，支持自然语言输入",
@@ -140,37 +138,33 @@ class CourseQueryServer(A2AServer):
             # 组装链
             chain = self.sql_prompt | self.llm
             # 调用链
-            current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')  # 获取当前日期，格式化为字符串
+            current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
             output = chain.invoke({"conversation": conversation, "current_date": current_date, "table_schema_string": self.schema}).content.strip()
             logger.info(f"原始 LLM 输出: {output}")
             # 处理结果，返回字典
-            if output.startswith('{'):  # 检查输出是否以JSON开头
+            if output.startswith('{'):
                 return json.loads(output)
             return {"status": "sql", "sql": output}
         except Exception as e:
             logger.error(f"SQL生成失败: {str(e)}")
-            return {"status": "input_required", "message": "查询无效，请提供课程代码或名称。"}  # 返回追问JSON
+            return {"status": "input_required", "message": "查询无效，请提供课程代码或名称。"}
 
     # 处理任务：提取输入，生成SQL，调用MCP，格式化结果
     def handle_task(self, task):
         # 1 提取输入
-        content = (task.message or {}).get("content", {})  # 从消息中获取内容
-        # 提取conversation，即客户端发起的任务中的query语句
+        content = (task.message or {}).get("content", {})
         conversation = content.get("text", "") if isinstance(content, dict) else ""
         logger.info(f"对话历史及用户问题: {conversation}")
 
         try:
             # 2 基于用户问题生成SQL查询
             gen_result = self.generate_sql_query(conversation)
-            # 检查是否需要追问，如果是则添加追问消息后返回任务
             if gen_result["status"] == "input_required":
-                # 追问逻辑，这里是指在无法正常生成sql时，设置任务状态为输入所需，添加追问消息
                 task.status = TaskStatus(state=TaskState.INPUT_REQUIRED,
                                          message={"role": "agent", "content": {"text": gen_result["message"]}})
                 return task
 
-            # 否则则提取SQL查询，并进行MCP调用
-            sql_query = gen_result["sql"]  #
+            sql_query = gen_result["sql"]
             logger.info(f"生成的SQL查询: {sql_query}")
 
             # 3 调用MCP
@@ -179,34 +173,26 @@ class CourseQueryServer(A2AServer):
             # 4 格式化结果
             response = json.loads(course_result) if isinstance(course_result, str) else course_result
             logger.info(f"MCP 返回: {response}")
-            # 检查响应状态
             if response.get("status") == "success":
-                data = response.get("data", [])  # 提取数据列表
+                data = response.get("data", [])
                 response_text = "\n".join([
-                                              f"{d['course_code']} {d['course_name']} | {d['instructor']} | {d['schedule_day']} {d['start_time']}-{d['end_time']} | {d['building']} {d['classroom']} | {d['category']} | 学分:{d['credits']} | 已选:{d['enrolled']}/{d['capacity']}"
-                                              for d in data])  # 格式化每个数据项为友好文本，连接成多行
+                    f"{d['course_code']} {d['course_name']} | {d['instructor']} | {d['schedule_day']} {d['start_time']}-{d['end_time']} | {d['building']} {d['classroom']} | {d['category']} | 学分:{d['credits']} | 已选:{d['enrolled']}/{d['capacity']}"
+                    for d in data])
 
-                # 设置任务产物为文本部分，并设置任务状态为完成
                 task.artifacts = [{"parts": [{"type": "text", "text": response_text}]}]
                 task.status = TaskStatus(state=TaskState.COMPLETED)
             elif response.get("status") == "no_data":
                 response_text = response.get("message", "请重新输入查询的课程代码或名称。")
-
-                # 设置任务状态为输入所需，添加追问消息
                 task.status = TaskStatus(state=TaskState.INPUT_REQUIRED,
                                          message={"role": "agent", "content": {"text": response_text}})
             else:
                 response_text = response.get("message", "查询失败，请重试或提供更多细节。")
-
-                # 设置任务状态为失败，添加错误信息
                 task.status = TaskStatus(state=TaskState.FAILED,
                                          message={"role": "agent", "content": {"text": response_text}})
 
             return task
-        except Exception as e:  # 捕获异常
+        except Exception as e:
             logger.error(f"查询失败: {str(e)}")
-
-            # 设置任务状态为失败，添加错误信息
             task.status = TaskStatus(state=TaskState.FAILED,
                                      message={"role": "agent",
                                               "content": {"text": f"查询失败: {str(e)} 请重试或提供更多细节。"}})
@@ -214,15 +200,11 @@ class CourseQueryServer(A2AServer):
 
 
 if __name__ == "__main__":
-    # 创建并运行服务器
-    # 实例化课程查询服务器
     course_server = CourseQueryServer()
-    # 打印服务器信息
     print("\n=== 服务器信息 ===")
     print(f"名称: {course_server.agent_card.name}")
     print(f"描述: {course_server.agent_card.description}")
     print("\n技能:")
     for skill in course_server.agent_card.skills:
         print(f"- {skill.name}: {skill.description}")
-    # 运行服务器
     run_server(course_server, host="127.0.0.1", port=5005)

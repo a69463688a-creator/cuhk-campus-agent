@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-文件名: create_logger.py
+文件名: logging.py
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/2/4
 描述: 日志系统初始化
@@ -9,7 +9,7 @@
 import logging
 import os
 
-from config import Config
+from app.config import Config
 
 
 def setup_logger(name, log_file='logs/app.log'):

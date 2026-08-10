@@ -11,8 +11,8 @@ import uuid
 
 from python_a2a import A2AClient, Message, TextContent, MessageRole, Task
 
-from config import Config
-from create_logger import logger
+from app.config import Config
+from app.logging import logger
 
 conf = Config()
 

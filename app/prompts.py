@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-文件名: main_prompts.py
+文件名: prompts.py
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/2/6
 描述: 所有 LLM Prompt 模板（意图识别、结果总结、推荐）

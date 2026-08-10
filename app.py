@@ -19,9 +19,9 @@ from datetime import datetime
 import pytz
 import re  # 用于清理响应
 
-from config import Config
-from create_logger import logger
-from main_prompts import SmartCampusPrompts
+from app.config import Config
+from app.logging import logger
+from app.prompts import SmartCampusPrompts
 
 conf = Config()
 

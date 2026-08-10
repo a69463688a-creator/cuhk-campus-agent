@@ -12,11 +12,8 @@ import os
 from dotenv import load_dotenv
 
 # 加载 .env 文件（项目根目录）
-_project_dir = os.path.dirname(os.path.abspath(__file__))
+_project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_project_dir, '.env'))
-
-# 项目根目录
-project_root = os.path.join(_project_dir, '..')
 
 
 # 生产环境

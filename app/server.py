@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-文件名: web_server.py
+文件名: server.py
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/8/10
-描述: FastAPI Web 后端 —— 替代 Streamlit app.py，提供 REST + WebSocket API
-      服务静态前端页面，集成 A2A Agent 调用、天气 API、意图识别
+描述: FastAPI Web 后端 —— REST + WebSocket API，静态前端页面，
+      集成 A2A Agent 调用、天气 API、意图识别
 """
 import os
 import sys
@@ -30,23 +30,24 @@ from pydantic import BaseModel, Field, field_validator
 from python_a2a import AgentNetwork, Message, TextContent, MessageRole, Task
 from langchain_openai import ChatOpenAI
 
-# 添加项目根目录到路径
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
-from config import Config
-from create_logger import logger
-from main_prompts import SmartCampusPrompts
+from app.config import Config
+from app.logging import logger
+from app.prompts import SmartCampusPrompts
 
 # ============ 配置 ============
 conf = Config()
 TZ = pytz.timezone('Asia/Shanghai')
 
+# 项目根目录
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # ============ FastAPI 应用 ============
-app = FastAPI(title="SmartCampus API", description="CUHK校园生活助手 Web API", version="3.0.0")
+app = FastAPI(title="SmartCampus API", description="CUHK校园生活助手 Web API", version="3.1.0")
 
 # 静态文件挂载
-os.makedirs("static", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+static_dir = os.path.join(BASE_DIR, "static")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # ============ 全局状态 ============
 agent_network: Optional[AgentNetwork] = None
@@ -74,7 +75,7 @@ async def startup():
         temperature=0.1
     )
 
-    # 初始化 AgentNetwork（仅保留2个代理，移除 BookingAssistant）
+    # 初始化 AgentNetwork（2个代理）
     agent_network = AgentNetwork(name="CUHK Campus Assistant Network")
     agent_network.add("CourseQueryAssistant", "http://localhost:5005")
     agent_network.add("FacilityQueryAssistant", "http://localhost:5006")
@@ -92,11 +93,11 @@ async def check_and_refresh_data():
 
     # 数据表配置: (表名, 标签, 过期阈值_hours, 脚本路径, 是否自动刷新)
     tables = [
-        ("campus_events",    "校园活动",   24,  "utils/spider_campus.py",        True),
-        ("campus_news",      "校园新闻",   24,  "utils/spider_news.py",          True),
-        ("canteen",          "餐厅信息",   168, "utils/spider_canteen.py",       False),
-        ("library_hours",    "图书馆时间", 168, "utils/spider_library_hours.py", False),
-        ("course_info",      "课程数据",   168, "utils/spider_course.py",        False),
+        ("campus_events",    "校园活动",   24,  "spiders/events.py",          True),
+        ("campus_news",      "校园新闻",   24,  "spiders/news.py",            True),
+        ("canteen",          "餐厅信息",   168, "spiders/canteen.py",         False),
+        ("library_hours",    "图书馆时间", 168, "spiders/library.py",         False),
+        ("course_info",      "课程数据",   168, "spiders/course.py",          False),
     ]
 
     logger.info("[数据检查] ========== 检查数据新鲜度 ==========")
@@ -145,7 +146,6 @@ async def check_and_refresh_data():
         conn.close()
 
     # 自动刷新高频数据（新闻、活动）
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     for label, script in stale_auto:
         logger.info(f"[自动刷新] 正在更新{label}...")
         try:
@@ -186,7 +186,7 @@ class QueryRequest(BaseModel):
     @field_validator('query')
     @classmethod
     def sanitize_query(cls, v: str) -> str:
-        """清理输入：去除首尾空白，移除 \x00 等控制字符"""
+        """清理输入：去除首尾空白，移除 \\x00 等控制字符"""
         import re
         v = v.strip()
         v = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', v)
@@ -429,7 +429,7 @@ async def process_query_stream(query: str, session_id: str):
 @app.get("/")
 async def root():
     """返回前端页面"""
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(BASE_DIR, "static", "index.html"))
 
 
 @app.post("/api/create_session")
@@ -545,7 +545,6 @@ async def stream_api(websocket: WebSocket):
 @app.get("/health")
 async def health_check():
     """增强健康检查：Web 自身 + A2A Agent + MCP Server 连通性"""
-    import asyncio as _asyncio
     import httpx as _httpx
 
     components = {"web_server": "ok"}
@@ -589,8 +588,8 @@ if __name__ == "__main__":
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', 8080))
     print(f"\n{'='*60}")
-    print(f"  SmartCampus Web 服务器 v3.0")
+    print(f"  SmartCampus Web 服务器 v3.1")
     print(f"  访问地址: http://localhost:{port}")
     print(f"  API 文档:  http://localhost:{port}/docs")
     print(f"{'='*60}\n")
-    uvicorn.run("web_server:app", host=host, port=port, reload=False)
+    uvicorn.run("app.server:app", host=host, port=port, reload=False)
