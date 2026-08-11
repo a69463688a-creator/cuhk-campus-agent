@@ -9,30 +9,15 @@
       由于页面使用 FullCalendar 动态渲染，采用 Playwright 渲染后提取数据。
       如 Playwright 不可用，使用内置基线数据。
 """
-import os
-import time
-import sys
-from datetime import datetime, date
+from datetime import date
 
 import mysql.connector
-import schedule
-import pytz
 
-# ============ 配置 ============
-TZ = pytz.timezone('Asia/Shanghai')
-
-db_config = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "123456"),
-    "database": os.getenv("DB_NAME", "cuhk_campus"),
-    "charset": "utf8mb4"
-}
+from spiders.base import BaseSpider
 
 CALENDAR_URL = "https://www.lib.cuhk.edu.hk/en/use/hours/calendar/"
 
 # CUHK 图书馆标准学期开放时间（公开信息，作为基线数据）
-# 格式: {library_name: {area: {day: (open, close)}}}
 BASELINE_HOURS = {
     "University Library": {
         "Main": {
@@ -50,7 +35,7 @@ BASELINE_HOURS = {
             "Mon": ("08:30", "18:00"), "Tue": ("08:30", "18:00"),
             "Wed": ("08:30", "18:00"), "Thu": ("08:30", "18:00"),
             "Fri": ("08:30", "18:00"), "Sat": ("08:30", "17:00"),
-            "Sun": ("", ""),  # 周日不提供服务
+            "Sun": ("", ""),
         },
     },
     "Chung Chi College Library": {
@@ -111,11 +96,6 @@ BASELINE_HOURS = {
 }
 
 
-def connect_db():
-    """建立 MySQL 连接"""
-    return mysql.connector.connect(**db_config)
-
-
 def get_date_for_day(day_name, reference_date=None):
     """获取本周某天的日期"""
     if reference_date is None:
@@ -127,8 +107,8 @@ def get_date_for_day(day_name, reference_date=None):
     return reference_date.replace(day=reference_date.day + delta)
 
 
-def store_baseline_hours(conn, cursor):
-    """将基线开放时间写入数据库"""
+def _store_baseline_hours(conn, cursor, _items):
+    """将基线开放时间写入数据库，使用 UPSERT 策略"""
     today = date.today()
     rows = []
 
@@ -140,7 +120,7 @@ def store_baseline_hours(conn, cursor):
                     open_t, close_t = times[0], times[1]
                     is_closed = (open_t == '' and close_t == '')
                 else:
-                    open_t = times[0]  # "24hrs"
+                    open_t = times[0]
                     close_t = times[0]
                     is_closed = 0
 
@@ -172,71 +152,23 @@ def store_baseline_hours(conn, cursor):
     return count
 
 
-def get_latest_fetch_time(cursor):
-    """获取 library_hours 表中最近一次更新时间"""
-    cursor.execute("SELECT MAX(created_at) FROM library_hours")
-    result = cursor.fetchone()
-    return result[0] if result[0] else None
+class LibrarySpider(BaseSpider):
+    """CUHK 图书馆开放时间爬虫"""
 
+    name = "Library Hours Spider"
+    data_source = f"CUHK Library (基线数据 + {CALENDAR_URL})"
+    stale_hours = 168
+    table_name = "library_hours"
+    schedule_time = "04:00"
+    schedule_rule = "monday"
 
-def should_update(latest_time, force=False):
-    """判断是否需要更新：无记录 / 超7天 / 强制更新"""
-    if force:
-        return True
-    if not latest_time:
-        return True
-    now = datetime.now(TZ)
-    if hasattr(latest_time, 'replace') and latest_time.tzinfo is None:
-        latest_time = latest_time.replace(tzinfo=TZ)
-    return (now - latest_time).total_seconds() / 3600 >= 168
+    def fetch(self):
+        """基线数据直接从常量读取，不需要网络请求"""
+        return [BASELINE_HOURS]  # 传一个标记让 store 知道有数据
 
-
-def update_library_hours(force=False):
-    """主更新入口"""
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    latest = get_latest_fetch_time(cursor)
-    if not should_update(latest, force):
-        print(f"[INFO] 图书馆开放时间已是最新（上次更新: {latest}），跳过。")
-        cursor.close()
-        conn.close()
-        return
-
-    print("[INFO] 使用基线数据更新图书馆开放时间...")
-    written = store_baseline_hours(conn, cursor)
-    print(f"[INFO] 成功写入/更新 {written} 条图书馆开放时间记录。")
-
-    cursor.close()
-    conn.close()
-
-
-def setup_scheduler():
-    """启动定时调度：每周一凌晨 04:00 执行"""
-    schedule.every().monday.at("04:00").do(update_library_hours)
-    print("[Scheduler] 定时任务已启动，每周一 04:00 (Asia/Shanghai) 执行。")
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    def store(self, conn, cursor, items):
+        return _store_baseline_hours(conn, cursor, items)
 
 
 if __name__ == "__main__":
-    force = "--force" in sys.argv
-    once = "--once" in sys.argv
-
-    print("=" * 60)
-    print("CUHK Library Hours Spider")
-    print(f"数据源: CUHK Library (基线数据 + {CALENDAR_URL})")
-    mode = '强制更新' if force else '增量更新（>7天 才拉取）'
-    if once:
-        mode += ' | 单次执行模式'
-    print(f"模式: {mode}")
-    print("=" * 60)
-
-    update_library_hours(force=force)
-
-    if once:
-        print("[INFO] --once 模式，更新完成，退出。")
-        sys.exit(0)
-
-    setup_scheduler()
+    LibrarySpider.main()

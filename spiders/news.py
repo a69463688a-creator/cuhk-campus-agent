@@ -8,28 +8,15 @@
       数据源: https://www.cpr.cuhk.edu.hk/en/news-centre/press-releases/
       支持分页抓取和增量更新。
 """
-import os
 import re
 import time
-import sys
 from datetime import datetime
 
 import mysql.connector
-import schedule
-import pytz
 import requests
 from bs4 import BeautifulSoup
 
-# ============ 配置 ============
-TZ = pytz.timezone('Asia/Shanghai')
-
-db_config = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "123456"),
-    "database": os.getenv("DB_NAME", "cuhk_campus"),
-    "charset": "utf8mb4"
-}
+from spiders.base import BaseSpider
 
 NEWS_LIST_URL = "https://www.cpr.cuhk.edu.hk/en/news-centre/press-releases/"
 HEADERS = {
@@ -37,11 +24,6 @@ HEADERS = {
 }
 MAX_PAGES = 5  # 每次最多抓取页数
 REQUEST_TIMEOUT = 20
-
-
-def connect_db():
-    """建立 MySQL 连接"""
-    return mysql.connector.connect(**db_config)
 
 
 def parse_date(date_str):
@@ -72,8 +54,6 @@ def fetch_news_page(page_num=1):
     soup = BeautifulSoup(resp.text, 'html.parser')
     news_items = []
 
-    # CPR 新闻列表结构: 每个新闻项是一个带链接的 div 或 li
-    # 查找所有指向 /press/ 的链接
     seen_titles = set()
     for link in soup.find_all('a', href=True):
         href = link['href']
@@ -115,13 +95,13 @@ def fetch_news_page(page_num=1):
             'title': title[:300],
             'date': parsed_date,
             'url': href,
-            'summary': title[:500],  # 标题作为简要摘要
+            'summary': title[:500],
         })
 
     return news_items
 
 
-def fetch_all_news(max_pages=MAX_PAGES):
+def _fetch_all_news(max_pages=MAX_PAGES):
     """抓取多页新闻，直到没有新数据或达到上限"""
     all_news = []
     for page in range(1, max_pages + 1):
@@ -132,11 +112,11 @@ def fetch_all_news(max_pages=MAX_PAGES):
             break
         print(f"{len(items)} 条")
         all_news.extend(items)
-        time.sleep(1)  # 请求间隔
+        time.sleep(1)
     return all_news
 
 
-def store_news(conn, cursor, news_items):
+def _store_news(conn, cursor, news_items):
     """写入 campus_news 表，INSERT IGNORE 去重"""
     if not news_items:
         return 0
@@ -167,76 +147,22 @@ def store_news(conn, cursor, news_items):
     return count
 
 
-def get_latest_fetch_time(cursor):
-    """获取 campus_news 表中最近一次爬虫写入的时间"""
-    cursor.execute("SELECT MAX(created_at) FROM campus_news")
-    result = cursor.fetchone()
-    return result[0] if result[0] else None
+class NewsSpider(BaseSpider):
+    """CUHK 校园新闻爬虫"""
 
+    name = "Campus News Spider"
+    data_source = NEWS_LIST_URL
+    stale_hours = 24
+    table_name = "campus_news"
+    schedule_time = "06:00"
+    schedule_rule = "day"
 
-def should_update(latest_time, force=False):
-    """判断是否需要更新：无记录 / 超24小时 / 强制更新"""
-    if force:
-        return True
-    if not latest_time:
-        return True
-    now = datetime.now(TZ)
-    if hasattr(latest_time, 'replace') and latest_time.tzinfo is None:
-        latest_time = latest_time.replace(tzinfo=TZ)
-    return (now - latest_time).total_seconds() / 3600 >= 24
+    def fetch(self):
+        return _fetch_all_news()
 
-
-def update_campus_news(force=False):
-    """主更新入口"""
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    latest = get_latest_fetch_time(cursor)
-    if not should_update(latest, force):
-        print(f"[INFO] 新闻数据已是最新（上次更新: {latest}），跳过。")
-        cursor.close()
-        conn.close()
-        return
-
-    print("[INFO] 开始从 CUHK CPR 新闻中心抓取数据...")
-    news_items = fetch_all_news()
-    if news_items:
-        written = store_news(conn, cursor, news_items)
-        print(f"[INFO] 成功写入 {written} 条新闻记录（共抓取 {len(news_items)} 条）。")
-    else:
-        print("[WARN] 未获取到新闻数据，本次跳过。")
-
-    cursor.close()
-    conn.close()
-
-
-def setup_scheduler():
-    """启动定时调度：每天北京时间 06:00 执行"""
-    schedule.every().day.at("06:00").do(update_campus_news)
-    print("[Scheduler] 定时任务已启动，每天 06:00 (Asia/Shanghai) 执行。")
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    def store(self, conn, cursor, items):
+        return _store_news(conn, cursor, items)
 
 
 if __name__ == "__main__":
-    import sys
-    force = "--force" in sys.argv
-    once = "--once" in sys.argv
-
-    print("=" * 60)
-    print("CUHK Campus News Spider")
-    print(f"数据源: {NEWS_LIST_URL}")
-    mode = '强制更新' if force else '增量更新（>24h 才拉取）'
-    if once:
-        mode += ' | 单次执行模式'
-    print(f"模式: {mode}")
-    print("=" * 60)
-
-    update_campus_news(force=force)
-
-    if once:
-        print("[INFO] --once 模式，更新完成，退出。")
-        sys.exit(0)
-
-    setup_scheduler()
+    NewsSpider.main()

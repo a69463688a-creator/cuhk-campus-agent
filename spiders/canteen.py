@@ -7,28 +7,14 @@
       从 CUHK 校园住宿页面抓取餐厅数据，解析并写入 canteen 表。
       数据源: https://www.cuhk.edu.hk/english/campus/accommodation.html#canteen_info
 """
-import os
 import re
-import time
-import sys
 from datetime import datetime
 
 import mysql.connector
-import schedule
-import pytz
 import requests
 from bs4 import BeautifulSoup
 
-# ============ 配置 ============
-TZ = pytz.timezone('Asia/Shanghai')
-
-db_config = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "123456"),
-    "database": os.getenv("DB_NAME", "cuhk_campus"),
-    "charset": "utf8mb4"
-}
+from spiders.base import BaseSpider
 
 CANTEEN_URL = "https://www.cuhk.edu.hk/english/campus/accommodation.html"
 HEADERS = {
@@ -37,14 +23,9 @@ HEADERS = {
 REQUEST_TIMEOUT = 20
 
 
-def connect_db():
-    """建立 MySQL 连接"""
-    return mysql.connector.connect(**db_config)
-
-
 def clean_text(text):
     """清理 HTML 实体和多余空白"""
-    text = text.replace('–', '-').replace('—', '-')  # en-dash, em-dash
+    text = text.replace('–', '-').replace('—', '-')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -85,8 +66,6 @@ def fetch_canteens():
         print("[WARN] 未找到餐厅信息区域")
         return []
 
-    # 结构: div.panel-body > table.table.contact-table > tbody > tr
-    # 每行: <th>名称</th> <td>电话</td> <td>地址</td> <td>营业时间</td>
     tbody = canteen_section.find('tbody')
     if not tbody:
         print("[WARN] 未找到餐厅 tbody")
@@ -96,13 +75,11 @@ def fetch_canteens():
     rows = tbody.find_all('tr')
 
     for row in rows:
-        # 名称在 <th> 中
         name_th = row.find('th')
         if not name_th:
             continue
         name = clean_text(name_th.get_text(strip=True))
 
-        # 电话/地址/时间在 <td> 中
         cells = row.find_all('td')
         if len(cells) < 3:
             continue
@@ -139,12 +116,11 @@ def fetch_canteens():
     return canteens
 
 
-def store_canteens(conn, cursor, canteens):
+def _store_canteens(conn, cursor, canteens):
     """写入 canteen 表，先清除旧数据再插入"""
     if not canteens:
         return 0
 
-    # 先清除所有旧数据
     cursor.execute("DELETE FROM canteen")
 
     insert_sql = """
@@ -173,75 +149,22 @@ def store_canteens(conn, cursor, canteens):
     return count
 
 
-def get_latest_fetch_time(cursor):
-    """获取 canteen 表中最近一次更新时间"""
-    cursor.execute("SELECT MAX(created_at) FROM canteen")
-    result = cursor.fetchone()
-    return result[0] if result[0] else None
+class CanteenSpider(BaseSpider):
+    """CUHK 校园餐厅爬虫"""
 
+    name = "Campus Canteen Spider"
+    data_source = CANTEEN_URL
+    stale_hours = 168
+    table_name = "canteen"
+    schedule_time = "03:00"
+    schedule_rule = "monday"
 
-def should_update(latest_time, force=False):
-    """判断是否需要更新：无记录 / 超7天 / 强制更新"""
-    if force:
-        return True
-    if not latest_time:
-        return True
-    now = datetime.now(TZ)
-    if hasattr(latest_time, 'replace') and latest_time.tzinfo is None:
-        latest_time = latest_time.replace(tzinfo=TZ)
-    return (now - latest_time).total_seconds() / 3600 >= 168  # 每周
+    def fetch(self):
+        return fetch_canteens()
 
-
-def update_canteen_data(force=False):
-    """主更新入口"""
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    latest = get_latest_fetch_time(cursor)
-    if not should_update(latest, force):
-        print(f"[INFO] 餐厅数据已是最新（上次更新: {latest}），跳过。")
-        cursor.close()
-        conn.close()
-        return
-
-    print("[INFO] 开始从 CUHK 住宿页面抓取餐厅数据...")
-    canteens = fetch_canteens()
-    if canteens:
-        written = store_canteens(conn, cursor, canteens)
-        print(f"[INFO] 成功写入 {written} 条餐厅记录。")
-    else:
-        print("[WARN] 未获取到餐厅数据，本次跳过。")
-
-    cursor.close()
-    conn.close()
-
-
-def setup_scheduler():
-    """启动定时调度：每周一凌晨 03:00 执行"""
-    schedule.every().monday.at("03:00").do(update_canteen_data)
-    print("[Scheduler] 定时任务已启动，每周一 03:00 (Asia/Shanghai) 执行。")
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    def store(self, conn, cursor, items):
+        return _store_canteens(conn, cursor, items)
 
 
 if __name__ == "__main__":
-    force = "--force" in sys.argv
-    once = "--once" in sys.argv
-
-    print("=" * 60)
-    print("CUHK Campus Canteen Spider")
-    print(f"数据源: {CANTEEN_URL}")
-    mode = '强制更新' if force else '增量更新（>7天 才拉取）'
-    if once:
-        mode += ' | 单次执行模式'
-    print(f"模式: {mode}")
-    print("=" * 60)
-
-    update_canteen_data(force=force)
-
-    if once:
-        print("[INFO] --once 模式，更新完成，退出。")
-        sys.exit(0)
-
-    setup_scheduler()
+    CanteenSpider.main()

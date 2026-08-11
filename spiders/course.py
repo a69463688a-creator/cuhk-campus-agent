@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 文件名: spider_course.py
-项目: SmartCampus — 基于A2A的CUHK校园生活助手
+项目: SmartCampus — CUHK校园生活助手
 描述: CUHK课程数据采集器
       从 another-cuhk-course-planner 项目的预抓取 JSON 数据中拉取 2026-27 学年
       课程信息，解析并写入 course_info 表。
       数据源: GitHub — EagleZhen/another-cuhk-course-planner
-      支持增量更新（每日检查）和 force 强制刷新。
 
 数据源说明:
       课程数据来自 CUHK RES（学生信息系统）的公开课程目录。
@@ -15,28 +14,19 @@
       对 RES 进行了完整抓取，输出为按学科分类的 JSON 文件。
       本脚本直接使用其预抓取的 JSON 文件，通过 GitHub Raw 访问。
 """
-import json
-import os
 import re
 import time
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 
 import mysql.connector
-import schedule
 import pytz
 import requests
 
-# ============ 配置 ============
-TZ = pytz.timezone('Asia/Shanghai')
+from spiders.base import BaseSpider
 
-db_config = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "123456"),
-    "database": os.getenv("DB_NAME", "cuhk_campus"),
-    "charset": "utf8mb4"
-}
+TZ = pytz.timezone('Asia/Shanghai')
 
 # 课程数据源 — GitHub Raw
 REPO_BASE = (
@@ -64,12 +54,6 @@ SUBJECTS = [
 
 REQUEST_TIMEOUT = 20
 
-
-def connect_db():
-    """建立 MySQL 连接"""
-    return mysql.connector.connect(**db_config)
-
-
 # ============ 时间解析 ============
 
 DAY_MAP = {
@@ -86,7 +70,6 @@ def parse_meeting_time(time_str):
     if not time_str or time_str == 'TBA':
         return None, None, None
 
-    # 匹配: "Mo 1:30PM - 3:15PM" 或 "Th 1:30PM - 2:15PM"
     m = re.match(
         r'(\w{2})\s+'
         r'(\d{1,2}):(\d{2})\s*(AM|PM)\s*[-–]\s*'
@@ -116,12 +99,10 @@ def parse_meeting_time(time_str):
 def split_location(location_str):
     """
     将 "William M W Mong Eng Bldg 404" 拆分为 (building, room_number)。
-    未匹配到时回退到全字符串作为 building。
     """
     if not location_str or location_str == 'TBA':
         return 'TBA', 'TBA'
 
-    # 尝试匹配 "XXX Bldg NNN" / "XXX Building NNN" / "XXX LT1" / "XXX Rm123"
     patterns = [
         r'^(.+?\bBldg\b)\s*(.+)$',
         r'^(.+?\bBuilding\b)\s*(.+)$',
@@ -137,7 +118,6 @@ def split_location(location_str):
         if m:
             return m.group(1).strip(), m.group(2).strip()
 
-    # 如果无法拆分，整串当作 building
     return location_str, ''
 
 
@@ -152,10 +132,7 @@ def parse_credits(credits_str):
 # ============ 数据获取 ============
 
 def fetch_subject_data(subject):
-    """
-    从 GitHub Raw 获取单个学科的课程 JSON。
-    返回 list[dict] 课程列表，失败返回 []。
-    """
+    """从 GitHub Raw 获取单个学科的课程 JSON。"""
     url = f"{REPO_BASE}/{subject}.json"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT)
@@ -173,17 +150,11 @@ def fetch_subject_data(subject):
 def transform_courses(subject_data):
     """
     将课程 JSON 转换为 course_info 表的行格式。
-    输入: subject_data (list[dict]) — 单个学科的所有课程
-    返回: list[tuple] — 准备 INSERT 的行
-
     每个 unique (course_code, schedule_day, start_time) 生成一行。
-    若同一时段有多个 meeting（如 lecture + tutorial 同时间），
-    取容量更大的那个。
     """
     rows = []
     now_str = datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')
 
-    # 自定义类别推断规则
     department_map = {
         'CSCI': 'CSCI', 'ENGG': 'ENGG', 'ELEG': 'ELEG', 'SEEM': 'SEEM',
         'MAEG': 'MAEG', 'BMEG': 'BMEG', 'DSPS': 'DSPS',
@@ -203,14 +174,10 @@ def transform_courses(subject_data):
         full_code = f"{subject}{code}"
         title = (course.get('title') or 'Unknown')[:100]
         credits_val = parse_credits(course.get('credits', '0'))
-        description = (
-            course.get('description') or ''
-        )[:5000]
+        description = (course.get('description') or '')[:5000]
         dept = (course.get('academic_group') or subject)[:50]
         category = department_map.get(subject, 'Others')
 
-        # 收集所有 unique meeting 组合（按 unique_course_time 约束去重）
-        # DB 约束: UNIQUE(course_code, schedule_day, start_time)
         seen_meetings = {}
 
         for term_info in course.get('terms', []):
@@ -240,32 +207,24 @@ def transform_courses(subject_data):
                     classroom = classroom[:50] if classroom else building[:50]
                     building = building[:80]
 
-                    # 按 DB 唯一键去重
                     meeting_key = (day, start_t)
                     if meeting_key in seen_meetings:
-                        # 保留容量更大的 entry
                         prev = seen_meetings[meeting_key]
                         if capacity > prev['capacity']:
                             prev.update({
-                                'capacity': capacity,
-                                'end_t': end_t,
-                                'instructor': instructor,
-                                'classroom': classroom,
+                                'capacity': capacity, 'end_t': end_t,
+                                'instructor': instructor, 'classroom': classroom,
                                 'building': building,
                             })
                         if enrolled > prev['enrolled']:
                             prev['enrolled'] = enrolled
                     else:
                         seen_meetings[meeting_key] = {
-                            'end_t': end_t,
-                            'instructor': instructor,
-                            'classroom': classroom,
-                            'building': building,
-                            'capacity': capacity,
-                            'enrolled': enrolled,
+                            'end_t': end_t, 'instructor': instructor,
+                            'classroom': classroom, 'building': building,
+                            'capacity': capacity, 'enrolled': enrolled,
                         }
 
-        # 输出行（覆盖 term1/term2 的重复 schedule）
         if seen_meetings:
             for (day, start_t), info in seen_meetings.items():
                 rows.append((
@@ -294,14 +253,13 @@ def transform_courses(subject_data):
 def store_courses(conn, cursor, rows):
     """
     写入 course_info 表。
-    使用先 DELETE 再 INSERT 的策略：按 subject 清除旧数据后插入新数据，
-    确保课程安排是最新的。
+    按 subject 清除旧数据后插入新数据，确保课程安排最新。
     """
     if not rows:
         return 0
 
-    # 收集所有受影响的 subject 并清除该 subject 的旧数据
-    affected_codes = set(r[0] for r in rows)  # full course_code
+    # 收集受影响的 subject 并清除旧数据
+    affected_codes = set(r[0] for r in rows)
     affected_subjects = set()
     for code in affected_codes:
         subj = re.match(r'^([A-Z]+)', code)
@@ -337,103 +295,75 @@ def store_courses(conn, cursor, rows):
     return count
 
 
-# ============ 主入口 ============
+class CourseSpider(BaseSpider):
+    """CUHK 课程数据爬虫
 
-def get_latest_fetch_time(cursor):
-    """获取 course_info 表中最近一次爬虫写入的时间"""
-    cursor.execute(
-        "SELECT MAX(update_time) FROM course_info "
-        "WHERE description LIKE '%course_spider%'"
-    )
-    result = cursor.fetchone()
-    return result[0] if result[0] else None
-
-
-def should_update(latest_time, force=False):
-    """判断是否需要更新"""
-    if force:
-        return True
-    if not latest_time:
-        return True
-    now = datetime.now(TZ)
-    if hasattr(latest_time, 'replace') and latest_time.tzinfo is None:
-        latest_time = latest_time.replace(tzinfo=TZ)
-    return (now - latest_time).total_seconds() / 3600 >= 168  # 每周更新
-
-
-def update_course_data(force=False, subjects=None):
+    由于课程数据按学科分文件存储，需要逐学科拉取并写入，
+    因此覆盖 update_data() 实现分科迭代逻辑。
     """
-    主更新入口。
-    subjects: None 则使用默认 SUBJECTS 列表。
-    """
-    target_subjects = subjects or SUBJECTS
-    conn = connect_db()
-    cursor = conn.cursor()
 
-    latest = get_latest_fetch_time(cursor)
-    if not should_update(latest, force):
-        print(f"[INFO] 课程数据已是最新（上次更新: {latest}），跳过。")
-        cursor.close()
-        conn.close()
-        return
+    name = "Course Data Spider"
+    data_source = REPO_BASE
+    stale_hours = 168
+    table_name = "course_info"
+    schedule_time = "02:00"
+    schedule_rule = "sunday"
+    timestamp_column = "update_time"
+    update_filter = "description LIKE '%course_spider%'"
 
-    total_courses = 0
-    total_rows = 0
+    def fetch(self):
+        """课程数据通过 update_data() 的分科迭代直接处理，此方法不使用。"""
+        return SUBJECTS  # 返回学科列表作为信号
 
-    for subject in target_subjects:
-        print(f"[FETCH] {subject} ...", end=' ', flush=True)
-        courses = fetch_subject_data(subject)
-        if not courses:
-            print(f"0 courses (skip)")
-            continue
+    def store(self, conn, cursor, items):
+        """课程数据通过 update_data() 的分科迭代直接处理，此方法不使用。"""
+        return 0
 
-        rows = transform_courses(courses)
-        written = store_courses(conn, cursor, rows)
-        print(f"{len(courses)} courses → {written} rows")
-        total_courses += len(courses)
-        total_rows += written
+    def update_data(self, force: bool = False) -> Optional[int]:
+        """
+        覆盖基类的 update_data()，实现逐学科拉取→转换→写入。
+        每个学科独立处理，避免单个学科失败影响全部。
+        """
+        conn = self.connect_db()
+        cursor = conn.cursor()
 
-        # 请求间短暂延迟，避免 GitHub 限流
-        time.sleep(0.5)
+        try:
+            latest = self.get_latest_fetch_time(cursor)
+            if not self.should_update(latest, force):
+                print(f"[INFO] 课程数据已是最新（上次更新: {latest}），跳过。")
+                return None
 
-    cursor.close()
-    conn.close()
+            total_courses = 0
+            total_rows = 0
 
-    print("=" * 50)
-    print(f"[DONE] {len(target_subjects)} subjects, "
-          f"{total_courses} courses, {total_rows} rows")
-    return total_rows
+            for subject in SUBJECTS:
+                print(f"[FETCH] {subject} ...", end=' ', flush=True)
+                courses = fetch_subject_data(subject)
+                if not courses:
+                    print("0 courses (skip)")
+                    continue
 
+                rows = transform_courses(courses)
+                written = store_courses(conn, cursor, rows)
+                print(f"{len(courses)} courses → {written} rows")
+                total_courses += len(courses)
+                total_rows += written
 
-def setup_scheduler():
-    """启动定时调度：每周日凌晨 2:00 执行"""
-    schedule.every().sunday.at("02:00").do(update_course_data)
-    print("[Scheduler] 定时任务已启动，每周日 02:00 (Asia/Shanghai) 执行。")
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+                time.sleep(0.5)  # 避免 GitHub 限流
+
+            print("=" * 50)
+            print(f"[DONE] {len(SUBJECTS)} subjects, "
+                  f"{total_courses} courses, {total_rows} rows")
+            return total_rows
+        finally:
+            cursor.close()
+            conn.close()
+
+    def print_banner(self, force: bool, once: bool):
+        """覆盖基类横幅，额外显示学科数量。"""
+        super().print_banner(force, once)
+        print(f"  学科数: {len(SUBJECTS)}")
 
 
 if __name__ == "__main__":
-    force = "--force" in sys.argv
-    once = "--once" in sys.argv
-
-    print("=" * 60)
-    print("CUHK Course Data Spider")
-    print(f"数据源: {REPO_BASE}")
-    print(f"学科数: {len(SUBJECTS)}")
-    mode = '强制更新' if force else '增量更新（>7天 才拉取）'
-    if once:
-        mode += ' | 单次执行模式'
-    print(f"模式: {mode}")
-    print("=" * 60)
-
-    # 立即执行一次
-    update_course_data(force=force)
-
-    if once:
-        print("[INFO] --once 模式，更新完成，退出。")
-        sys.exit(0)
-
-    # 启动定时调度
-    setup_scheduler()
+    CourseSpider.main()

@@ -2,70 +2,44 @@
 # -*- coding: utf-8 -*-
 """
 文件名: spider_campus.py
-项目: SmartCampus — 基于A2A的CUHK校园生活助手
-创建日期: 2026/2/4
+项目: SmartCampus — CUHK校园生活助手
 描述: CUHK校园活动定时采集器
       从 CPR 活动 AJAX 接口获取真实校园活动数据，存入 campus_events 表。
       支持增量更新：超24小时自动拉取，也支持 force_update=True 强制刷新。
-      配备 schedule 定时调度（默认每天北京时间凌晨1:00执行）。
 数据源:
       https://apps.cuhk.edu.hk/cuhkwebsite/cpr-new/events-ajax2.aspx
 """
-import os
-import requests
-import mysql.connector
-from datetime import datetime, timedelta
-import schedule
-import time
 import re
 import json
 import subprocess
 import ast
-import pytz
+from datetime import datetime, timedelta
 
-# ============ 配置 ============
+import mysql.connector
+import pytz
+import requests
+
+from spiders.base import BaseSpider
+
 TZ = pytz.timezone('Asia/Shanghai')
 
-db_config = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "user": os.getenv("DB_USER", "root"),
-    "password": os.getenv("DB_PASSWORD", "123456"),
-    "database": os.getenv("DB_NAME", "cuhk_campus"),
-    "charset": "utf8mb4"
-}
-
-# CUHK CPR 活动 AJAX 接口（返回 JSON 数组）
 EVENTS_API_URL = "https://apps.cuhk.edu.hk/cuhkwebsite/cpr-new/events-ajax2.aspx"
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
 
-def connect_db():
-    """建立 MySQL 连接"""
-    return mysql.connector.connect(**db_config)
-
-
 def parse_event_datetime(date_str, time_html):
     """
     从 API 返回的 start_date + extracted_datetime_display 中解析开始/结束时间。
-    API 格式示例:
-      date_str:   "8/23/2026 12:00:00 AM"
-      time_html:  "23 August 2026 <p>10:30 am</p>"  或
-                  "21 May 2026–22 May 2026"          或
-                  "4 July 2026&ndash;26 July 2026 <p>...</p>"
-
     返回 (start_datetime_str, end_datetime_str)，格式: 'YYYY-MM-DD HH:MM:SS'
     """
     if not time_html:
         time_html = ''
 
-    # 清理 HTML 实体
     clean = re.sub(r'<[^>]+>', ' ', time_html)
     clean = clean.replace('&ndash;', '–').replace('&nbsp;', ' ').strip()
 
-    # 解析 API 的 start_date
     try:
         parsed_start = datetime.strptime(date_str, '%m/%d/%Y %I:%M:%S %p')
     except ValueError:
@@ -144,24 +118,19 @@ def infer_category(title):
 def _parse_api_response(raw_text):
     """
     解析 API 返回的原始文本。
-    CUHK API 返回的是 Python 字面量格式：({'status': 'success', ...})
-    也会尝试标准 JSON。
-    返回 dict。
+    CUHK API 返回 Python 字面量或标准 JSON。
     """
     text = raw_text.strip()
     if not text:
         return {}
 
-    # 方式1: 标准 JSON
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # 方式2: Python 字面量 — 外层可能有括号包裹
     try:
         result = ast.literal_eval(text)
-        # 可能是 ({...}), [...], 或直接 {...}
         if isinstance(result, (list, tuple)):
             result = result[0] if result else {}
         if isinstance(result, dict):
@@ -172,13 +141,12 @@ def _parse_api_response(raw_text):
     return {}
 
 
-def fetch_events_from_api():
+def _fetch_events_from_api():
     """
     从 CUHK CPR 活动 AJAX 接口获取活动列表。
     优先使用 requests，若 SSL 握手失败则回退到 curl 子进程。
-    返回 list[dict]。
     """
-    # 方式1: requests（部分 Python 环境的 OpenSSL 与此服务器不兼容）
+    # 方式1: requests
     try:
         resp = requests.get(EVENTS_API_URL, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -186,7 +154,7 @@ def fetch_events_from_api():
         if data.get('status') == 'success':
             return data.get('structure', [])
     except Exception:
-        pass  # 回退到 curl
+        pass
 
     # 方式2: 系统 curl（Git Bash 自带，OpenSSL 兼容性更好）
     try:
@@ -205,33 +173,8 @@ def fetch_events_from_api():
     return []
 
 
-def get_latest_fetch_time(cursor):
-    """获取 campus_events 表中最近一次爬虫写入的时间"""
-    cursor.execute(
-        "SELECT MAX(created_at) FROM campus_events "
-        "WHERE description LIKE '%cpr_spider%'"
-    )
-    result = cursor.fetchone()
-    return result[0] if result[0] else None
-
-
-def should_update(latest_time, force=False):
-    """判断是否需要更新：无记录 / 超24小时 / 强制更新"""
-    if force:
-        return True
-    if not latest_time:
-        return True
-    now = datetime.now(TZ)
-    if hasattr(latest_time, 'replace') and latest_time.tzinfo is None:
-        latest_time = latest_time.replace(tzinfo=TZ)
-    return (now - latest_time).total_seconds() / 3600 >= 24
-
-
-def store_events(conn, cursor, events):
-    """
-    将活动数据写入 campus_events 表。
-    使用 INSERT IGNORE 避免重复。
-    """
+def _store_events(conn, cursor, events):
+    """将活动数据写入 campus_events 表，使用 INSERT IGNORE 避免重复"""
     if not events:
         print("[INFO] 无新活动数据，跳过写入。")
         return 0
@@ -248,7 +191,6 @@ def store_events(conn, cursor, events):
 
             start_time, end_time = parse_event_datetime(date_str, time_html)
 
-            # 如果结束时间和开始时间相同，尝试用 API 的 end_date
             if end_time == start_time and end_date_str:
                 try:
                     parsed_end = datetime.strptime(end_date_str,
@@ -288,58 +230,23 @@ def store_events(conn, cursor, events):
     return count
 
 
-def update_campus_events(force=False):
-    """主更新入口：检查→拉取→写入"""
-    conn = connect_db()
-    cursor = conn.cursor()
+class EventsSpider(BaseSpider):
+    """CUHK 校园活动爬虫"""
 
-    latest = get_latest_fetch_time(cursor)
-    if not should_update(latest, force):
-        print(f"[INFO] 数据已是最新（上次更新: {latest}），跳过。")
-        cursor.close()
-        conn.close()
-        return
+    name = "Campus Event Spider"
+    data_source = EVENTS_API_URL
+    stale_hours = 24
+    table_name = "campus_events"
+    schedule_time = "01:00"
+    schedule_rule = "day"
+    update_filter = "description LIKE '%cpr_spider%'"
 
-    print("[INFO] 开始从 CUHK CPR 活动接口拉取数据...")
-    events = fetch_events_from_api()
-    if events:
-        store_events(conn, cursor, events)
-    else:
-        print("[WARN] API 返回空数据，本次跳过。")
+    def fetch(self):
+        return _fetch_events_from_api()
 
-    cursor.close()
-    conn.close()
-
-
-def setup_scheduler():
-    """启动定时调度：每天北京时间凌晨 1:00 执行"""
-    schedule.every().day.at("01:00").do(update_campus_events)
-    print("[Scheduler] 定时任务已启动，每天 01:00 (Asia/Shanghai) 执行。")
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    def store(self, conn, cursor, items):
+        return _store_events(conn, cursor, items)
 
 
 if __name__ == "__main__":
-    import sys
-    force = "--force" in sys.argv
-    once = "--once" in sys.argv
-
-    print("=" * 60)
-    print("CUHK Campus Event Spider")
-    print(f"数据源: {EVENTS_API_URL}")
-    mode = '强制更新' if force else '增量更新（>24h 才拉取）'
-    if once:
-        mode += ' | 单次执行模式'
-    print(f"模式: {mode}")
-    print("=" * 60)
-
-    # 立即执行一次
-    update_campus_events(force=force)
-
-    if once:
-        print("[INFO] --once 模式，更新完成，退出。")
-        sys.exit(0)
-
-    # 启动定时调度
-    setup_scheduler()
+    EventsSpider.main()

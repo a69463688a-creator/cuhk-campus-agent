@@ -13,13 +13,19 @@
 import sys
 import time
 
-# 5 个爬虫模块：key → (模块导入路径, 更新函数, 显示名称)
+from spiders.news import NewsSpider
+from spiders.events import EventsSpider
+from spiders.canteen import CanteenSpider
+from spiders.library import LibrarySpider
+from spiders.course import CourseSpider
+
+# 5 个爬虫：key → (类, 显示名称)
 SPIDERS = {
-    "news":     ("spiders.news",     "update_campus_news",   "📰 校园新闻"),
-    "events":   ("spiders.events",   "update_campus_events", "🎉 校园活动"),
-    "canteen":  ("spiders.canteen",  "update_canteen_data",  "🍽️  餐厅信息"),
-    "library":  ("spiders.library",  "update_library_hours", "📖 图书馆"),
-    "course":   ("spiders.course",   "update_course_data",   "📚 课程数据"),
+    "news":    (NewsSpider,    "校园新闻"),
+    "events":  (EventsSpider,  "校园活动"),
+    "canteen": (CanteenSpider, "餐厅信息"),
+    "library": (LibrarySpider, "图书馆"),
+    "course":  (CourseSpider,  "课程数据"),
 }
 
 ALL_KEYS = list(SPIDERS.keys())
@@ -38,22 +44,25 @@ def parse_args():
 
 def run_one(key: str, force: bool) -> bool:
     """运行单个爬虫，返回是否成功"""
-    module_path, func_name, label = SPIDERS[key]
+    cls, label = SPIDERS[key]
+    spider = cls()
     print(f"\n{'─'*50}")
-    print(f"  {label}  [{module_path}]")
+    print(f"  {label}  [{spider.name}]")
     print(f"{'─'*50}")
 
     try:
-        import importlib
-        module = importlib.import_module(module_path)
-        func = getattr(module, func_name)
         start = time.time()
-        func(force=force)
+        result = spider.update_data(force=force)
         elapsed = time.time() - start
-        print(f"  {label} ✅ 完成 ({elapsed:.1f}s)")
+        if result is not None:
+            print(f"  {label} 完成 ({elapsed:.1f}s) — {result} 条记录")
+        else:
+            print(f"  {label} 跳过 ({elapsed:.1f}s) — 数据已是最新")
         return True
     except Exception as e:
-        print(f"  {label} ❌ 失败: {e}")
+        print(f"  {label} 失败: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -62,8 +71,8 @@ def main():
 
     print("=" * 60)
     print("  SmartCampus 爬虫统一入口")
-    print(f"  模式: {'🔁 强制刷新' if force else '📌 增量更新'}")
-    print(f"  模块: {', '.join(SPIDERS[t][2] for t in targets)}")
+    print(f"  模式: {'强制刷新' if force else '增量更新'}")
+    print(f"  模块: {', '.join(SPIDERS[t][1] for t in targets)}")
     print("=" * 60)
 
     start_all = time.time()

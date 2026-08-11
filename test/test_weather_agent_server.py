@@ -15,16 +15,12 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from app.config import Config
 from app.logging import logger
+from app.llm import create_llm
 
 conf = Config()
 
 # 初始化 LLM
-llm = ChatOpenAI(
-            model=conf.model_name,
-            api_key=conf.api_key,
-            base_url=conf.base_url,
-            temperature=0.1
-        )
+llm = create_llm()
 
 # 课程总结提示模板
 course_prompt = ChatPromptTemplate.from_template(

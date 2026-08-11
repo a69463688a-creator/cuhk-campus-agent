@@ -21,6 +21,8 @@ pydantic>=2.0.0
 
 # 数据库
 mysql-connector-python>=9.0.0
+pymysql>=1.1.0
+alembic>=1.13.0
 
 # 异步 HTTP
 httpx>=0.28.0

@@ -101,6 +101,21 @@ def main():
     if not wait_for_mysql(db_host, db_user, db_pass, db_name):
         log("MySQL 不可用，退出。") ; sys.exit(1)
 
+    # ── 0.5 数据库迁移 (Alembic) ──
+    log("执行数据库迁移 (alembic upgrade head) ...")
+    try:
+        result = subprocess.run(
+            [python, "-m", "alembic", "upgrade", "head"],
+            cwd="/app", capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            log(f"Alembic 迁移失败:\n{result.stderr}")
+            sys.exit(1)
+        log(f"Alembic 迁移完成:\n{result.stdout}")
+    except Exception as e:
+        log(f"Alembic 迁移异常: {e}")
+        sys.exit(1)
+
     # ── 1. MCP Servers ──
     mcp_course   = start_service("Course MCP (8002)",   [python, "mcp_servers/course_server.py"])
     mcp_facility = start_service("Facility MCP (8001)",  [python, "mcp_servers/facility_server.py"])

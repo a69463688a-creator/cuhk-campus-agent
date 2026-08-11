@@ -1,3 +1,7 @@
+-- ⚠️ 此文件为历史参考，不再由 Docker 自动执行。
+-- 数据库 schema 和 seed 数据已迁移至 Alembic（见 migrations/versions/）。
+-- Docker 启动时由 docker-entrypoint.py 执行 `alembic upgrade head` 替代。
+--
 -- Docker init: database created by MYSQL_DATABASE env var
 USE cuhk_campus;
 

@@ -15,6 +15,7 @@ from mcp.server import MCPServer
 
 from app.config import Config
 from app.logging import logger
+from app.security import validate_readonly_sql
 from data.format import DateEncoder, default_encoder
 
 conf = Config()
@@ -51,6 +52,7 @@ class CourseService:
 
     def execute_query(self, sql: str) -> str:
         try:
+            validate_readonly_sql(sql)
             self._ensure_connection()
             cursor = self.conn.cursor(dictionary=True)
             cursor.execute(sql)

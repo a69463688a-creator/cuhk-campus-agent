@@ -19,16 +19,12 @@ import pytz
 
 from app.config import Config
 from app.logging import logger
+from app.llm import create_llm
 
 conf = Config()
 
 # 初始化LLM
-llm = ChatOpenAI(
-    model=conf.model_name,
-    base_url=conf.base_url,
-    api_key=conf.api_key,
-    temperature=0.1
-)
+llm = create_llm()
 
 
 # 数据表 schema

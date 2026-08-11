@@ -29,6 +29,7 @@ from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 from python_a2a import AgentNetwork, Message, TextContent, MessageRole, Task
 from langchain_openai import ChatOpenAI
+from app.llm import create_llm
 
 from app.config import Config
 from app.logging import logger
@@ -68,12 +69,7 @@ async def startup():
     global agent_network, llm
 
     # 初始化 LLM
-    llm = ChatOpenAI(
-        model=conf.model_name,
-        api_key=conf.api_key,
-        base_url=conf.base_url,
-        temperature=0.1
-    )
+    llm = create_llm()
 
     # 初始化 AgentNetwork（2个代理）
     agent_network = AgentNetwork(name="CUHK Campus Assistant Network")

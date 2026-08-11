@@ -16,7 +16,8 @@ services:
       - "3308:3306"                 # 避免与 PaperRag MySQL (3307) 冲突
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./sql/docker_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      # 数据库 schema 和 seed 数据已由 Alembic 管理（见 migrations/）
+      # docker_init.sql 保留为参考文件，不再自动执行
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s

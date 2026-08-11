@@ -15,6 +15,7 @@ import re
 import requests
 from python_a2a import AgentNetwork, TextContent, Message, MessageRole, Task
 from langchain_openai import ChatOpenAI
+from app.llm import create_llm
 
 from app.config import Config
 from app.logging import logger
@@ -45,12 +46,7 @@ def initialize_system():
     network.add("FacilityQueryAssistant", "http://localhost:5006")
     agent_network = network
 
-    llm = ChatOpenAI(
-        model=conf.model_name,
-        api_key=conf.api_key,
-        base_url=conf.base_url,
-        temperature=0.1
-    )
+    llm = create_llm()
 
     conversation_history = ""
 
