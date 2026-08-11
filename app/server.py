@@ -272,7 +272,8 @@ def get_session(session_id: str) -> List[dict]:
 )
 async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
     """调用 LLM 进行多意图识别（异步），自动重试最多 3 次"""
-    chain = SmartCampusPrompts.intent_prompt() | llm
+    _llm = llm or create_llm()  # 防御：若 startup 未触发，降级到 create_llm()
+    chain = SmartCampusPrompts.intent_prompt() | _llm
     current_date = datetime.now(TZ).strftime('%Y-%m-%d')
     context_lines = '\n'.join(conversation_history.split("\n")[-6:])
 
@@ -365,6 +366,8 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
     start = time.perf_counter()
     status = "error"
     try:
+        if agent_network is None:
+            raise RuntimeError("AgentNetwork 未初始化（请确保 startup 事件已触发）")
         agent = agent_network.get_agent(agent_name)
         chat_history = '\n'.join(conversation_history.split("\n")[-7:-1]) + f'\nUser: {query_str}'
         message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
@@ -395,10 +398,11 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
 
 async def summarize_response(agent_name: str, query_str: str, agent_result: str) -> str:
     """用 LLM 总结 Agent 返回的原始数据（异步）"""
+    _llm = llm or create_llm()  # 防御：若 startup 未触发
     if agent_name == "CourseQueryAssistant":
-        chain = SmartCampusPrompts.summarize_course_prompt() | llm
+        chain = SmartCampusPrompts.summarize_course_prompt() | _llm
     elif agent_name == "FacilityQueryAssistant":
-        chain = SmartCampusPrompts.summarize_facility_prompt() | llm
+        chain = SmartCampusPrompts.summarize_facility_prompt() | _llm
     else:
         return agent_result
 
@@ -456,13 +460,13 @@ async def process_query_stream(query: str, session_id: str):
                 # 天气：直接调 API
                 weather_data = await fetch_weather()
                 weather_text = format_weather_for_prompt(weather_data)
-                chain = SmartCampusPrompts.summarize_weather_prompt() | llm
+                chain = SmartCampusPrompts.summarize_weather_prompt() | (llm or create_llm())
                 final = (await chain.ainvoke({"query": user_queries.get(intent, query), "raw_response": weather_text})).content.strip()
                 responses.append(final)
 
             elif intent == "recommend":
                 # 推荐：LLM 直接生成
-                chain = SmartCampusPrompts.recommend_prompt() | llm
+                chain = SmartCampusPrompts.recommend_prompt() | (llm or create_llm())
                 final = (await chain.ainvoke({"query": user_queries.get(intent, query)})).content.strip()
                 responses.append(final)
 
