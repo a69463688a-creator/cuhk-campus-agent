@@ -22,9 +22,9 @@ import pytz
 import requests
 import mysql.connector
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 from python_a2a import AgentNetwork, Message, TextContent, MessageRole, Task
@@ -34,6 +34,13 @@ from app.llm import create_llm
 from app.config import Config
 from app.logging import logger
 from app.prompts import SmartCampusPrompts
+from app.observability import (
+    span, trace, new_trace_id, set_trace_id, get_trace_id,
+    http_requests_total, http_request_duration_seconds,
+    a2a_agent_calls_total, a2a_agent_call_duration_seconds,
+    websocket_connections,
+    get_metrics,
+)
 
 # ============ 配置 ============
 conf = Config()
@@ -44,6 +51,53 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ============ FastAPI 应用 ============
 app = FastAPI(title="SmartCampus API", description="CUHK校园生活助手 Web API", version="3.1.0")
+
+# ============ TraceMiddleware — 全链路追踪入口 ============
+# 不需要追踪的路径
+_TRACE_EXCLUDE_PATHS = {"/health", "/metrics", "/static", "/favicon.ico", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def trace_middleware(request: Request, call_next) -> Response:
+    """为每个 HTTP 请求生成 trace_id，记录耗时，注入响应头"""
+    path = request.url.path
+
+    # 跳过非业务路径
+    if any(path.startswith(p) for p in _TRACE_EXCLUDE_PATHS):
+        return await call_next(request)
+
+    # 生成或继承 trace_id
+    tid = request.headers.get("X-Trace-Id", new_trace_id())
+    set_trace_id(tid)
+
+    start = time.perf_counter()
+    method = request.method
+    status_code = 500
+
+    with span("http_request", {
+        "method": method,
+        "path": path,
+        "client": request.client.host if request.client else "",
+    }):
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["X-Trace-Id"] = tid
+            return response
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            elapsed = time.perf_counter() - start
+            http_requests_total.labels(
+                method=method, endpoint=path, status=str(status_code)
+            ).inc()
+            http_request_duration_seconds.labels(
+                method=method, endpoint=path
+            ).observe(elapsed)
+            logger.info(
+                f"{method} {path} → {status_code} ({elapsed*1000:.1f}ms)"
+            )
 
 # 静态文件挂载
 static_dir = os.path.join(BASE_DIR, "static")
@@ -222,21 +276,22 @@ async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
     current_date = datetime.now(TZ).strftime('%Y-%m-%d')
     context_lines = '\n'.join(conversation_history.split("\n")[-6:])
 
-    intent_response = (await chain.ainvoke({
-        "conversation_history": context_lines,
-        "query": user_input,
-        "current_date": current_date
-    })).content.strip()
+    with span("llm_recognize_intent"):
+        intent_response = (await chain.ainvoke({
+            "conversation_history": context_lines,
+            "query": user_input,
+            "current_date": current_date
+        })).content.strip()
 
-    # 清理 Markdown 代码块
-    intent_response = re.sub(r'^```json\s*|\s*```$', '', intent_response).strip()
-    logger.info(f"意图识别: {intent_response}")
+        # 清理 Markdown 代码块
+        intent_response = re.sub(r'^```json\s*|\s*```$', '', intent_response).strip()
+        logger.info(f"意图识别: {intent_response}")
 
-    intent_output = json.loads(intent_response)
-    intents = intent_output.get("intents", [])
-    user_queries = intent_output.get("user_queries", {})
-    follow_up_message = intent_output.get("follow_up_message", "")
-    return intents, user_queries, follow_up_message
+        intent_output = json.loads(intent_response)
+        intents = intent_output.get("intents", [])
+        user_queries = intent_output.get("user_queries", {})
+        follow_up_message = intent_output.get("follow_up_message", "")
+        return intents, user_queries, follow_up_message
 
 
 # ============ 天气 API ============
@@ -307,22 +362,35 @@ def format_weather_for_prompt(data: dict) -> str:
 )
 async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> str:
     """调用 A2A Agent 并返回原始结果文本（自动重试最多 2 次）"""
+    start = time.perf_counter()
+    status = "error"
     try:
         agent = agent_network.get_agent(agent_name)
         chat_history = '\n'.join(conversation_history.split("\n")[-7:-1]) + f'\nUser: {query_str}'
         message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
-        task = Task(id="task-" + str(uuid.uuid4()), message=message.to_dict())
+        # 将 trace_id 注入 A2A 消息，Agent 端可提取用于链路关联
+        message_dict = message.to_dict()
+        message_dict["_trace_id"] = get_trace_id()
+        task = Task(id="task-" + str(uuid.uuid4()), message=message_dict)
 
-        raw_response = await agent.send_task_async(task)
-        logger.info(f"{agent_name} 响应状态: {raw_response.status.state}")
+        with span("a2a_call_agent", {"agent_name": agent_name}):
+            raw_response = await agent.send_task_async(task)
+            logger.info(f"{agent_name} 响应状态: {raw_response.status.state}")
 
-        if raw_response.status.state == 'completed':
-            return raw_response.artifacts[0]['parts'][0]['text']
-        else:
-            return raw_response.status.message['content']['text']
+            if raw_response.status.state == 'completed':
+                status = "completed"
+                return raw_response.artifacts[0]['parts'][0]['text']
+            else:
+                status = raw_response.status.state
+                return raw_response.status.message['content']['text']
     except Exception as e:
         logger.error(f"A2A Agent '{agent_name}' 调用失败: {e}")
+        status = "error"
         return f"ERROR: Agent '{agent_name}' 不可达 — {str(e)}"
+    finally:
+        elapsed = time.perf_counter() - start
+        a2a_agent_calls_total.labels(agent_name=agent_name, status=status).inc()
+        a2a_agent_call_duration_seconds.labels(agent_name=agent_name).observe(elapsed)
 
 
 async def summarize_response(agent_name: str, query_str: str, agent_result: str) -> str:
@@ -490,6 +558,7 @@ async def query_api(request: QueryRequest):
 async def stream_api(websocket: WebSocket):
     """WebSocket 流式查询接口"""
     await websocket.accept()
+    websocket_connections.inc()
 
     try:
         while True:
@@ -505,15 +574,16 @@ async def stream_api(websocket: WebSocket):
             # 发送开始信号
             await websocket.send_json({"type": "start", "session_id": session_id})
 
-            # 流式处理
+            # 流式处理（带 trace span）
             accumulated = ""
-            async for token, is_complete, _ in process_query_stream(query, session_id):
-                # 逐字符流式输出（模拟打字效果）
-                new_chars = token[len(accumulated):]
-                for char in new_chars:
-                    await websocket.send_json({"type": "token", "token": char, "session_id": session_id})
-                    await asyncio.sleep(0.02)  # 打字速度
-                accumulated += new_chars
+            with span("websocket_query", {"query": query[:100]}):
+                async for token, is_complete, _ in process_query_stream(query, session_id):
+                    # 逐字符流式输出（模拟打字效果）
+                    new_chars = token[len(accumulated):]
+                    for char in new_chars:
+                        await websocket.send_json({"type": "token", "token": char, "session_id": session_id})
+                        await asyncio.sleep(0.02)  # 打字速度
+                    accumulated += new_chars
 
             # 发送结束信号
             await websocket.send_json({
@@ -532,6 +602,7 @@ async def stream_api(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        websocket_connections.dec()
         try:
             await websocket.close()
         except Exception:
@@ -576,6 +647,12 @@ async def health_check():
         "timestamp": datetime.now(TZ).isoformat(),
         "components": components,
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus 指标端点"""
+    return PlainTextResponse(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 
 # ============ 主入口 ============

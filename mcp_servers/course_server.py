@@ -6,6 +6,7 @@
 创建日期: 2026/2/4
 描述: 课程信息 MCP 服务器 —— 基于 course_info 表提供课程查询工具（端口 8002）
 """
+import time
 import mysql.connector
 import json
 from datetime import date, datetime, timedelta
@@ -16,6 +17,7 @@ from mcp.server import MCPServer
 from app.config import Config
 from app.logging import logger
 from app.security import validate_readonly_sql
+from app.observability import span, db_query_duration_seconds
 from data.format import DateEncoder, default_encoder
 
 conf = Config()
@@ -51,13 +53,15 @@ class CourseService:
             logger.info("MySQL 重连成功")
 
     def execute_query(self, sql: str) -> str:
+        start = time.perf_counter()
         try:
             validate_readonly_sql(sql)
             self._ensure_connection()
-            cursor = self.conn.cursor(dictionary=True)
-            cursor.execute(sql)
-            results = cursor.fetchall()
-            cursor.close()
+            with span("db_execute_query", {"service": "CourseService", "sql": sql[:200]}):
+                cursor = self.conn.cursor(dictionary=True)
+                cursor.execute(sql)
+                results = cursor.fetchall()
+                cursor.close()
             for result in results:
                 for key, value in result.items():
                     if isinstance(value, (date, datetime, timedelta, Decimal)):
@@ -69,6 +73,35 @@ class CourseService:
             )
         except Exception as e:
             logger.error(f"课程查询错误: {str(e)}")
+            return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+        finally:
+            db_query_duration_seconds.labels(service="CourseService").observe(
+                time.perf_counter() - start
+            )
+
+    def get_table_schema(self) -> str:
+        """返回 course_info 表的完整结构（字段名、类型、键、注释）"""
+        try:
+            self._ensure_connection()
+            cursor = self.conn.cursor(dictionary=True)
+            cursor.execute("SHOW FULL COLUMNS FROM course_info")
+            columns = cursor.fetchall()
+            cursor.close()
+            # 同时获取索引信息
+            cursor = self.conn.cursor(dictionary=True)
+            cursor.execute("SHOW INDEX FROM course_info")
+            indexes = cursor.fetchall()
+            cursor.close()
+            for col in columns:
+                for key, value in col.items():
+                    if isinstance(value, (date, datetime, timedelta, Decimal)):
+                        col[key] = default_encoder(value)
+            return json.dumps(
+                {"status": "success", "columns": columns, "indexes": indexes},
+                cls=DateEncoder, ensure_ascii=False
+            )
+        except Exception as e:
+            logger.error(f"获取课程表结构失败: {str(e)}")
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -89,6 +122,14 @@ def create_course_mcp_server():
     def query_courses(sql: str) -> str:
         logger.info(f"执行课程查询: {sql}")
         return service.execute_query(sql)
+
+    @course_mcp.tool(
+        name="get_course_schema",
+        description="返回 course_info 表的完整结构，包括字段名、类型、注释和索引信息"
+    )
+    def get_course_schema() -> str:
+        logger.info("获取 course_info 表结构")
+        return service.get_table_schema()
 
     logger.info("=== 课程MCP服务器信息 ===")
     logger.info(f"名称: {course_mcp.name}")

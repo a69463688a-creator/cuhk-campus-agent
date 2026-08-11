@@ -7,6 +7,7 @@
 描述: 校园设施数据服务类，封装MySQL查询逻辑
 """
 
+import time
 import mysql.connector
 import json
 from datetime import date, datetime, timedelta
@@ -15,6 +16,7 @@ from decimal import Decimal
 from app.config import Config
 from app.logging import logger
 from app.security import validate_readonly_sql
+from app.observability import span, db_query_duration_seconds
 from data.format import DateEncoder, default_encoder
 
 conf = Config()
@@ -52,13 +54,15 @@ class FacilityService:
             logger.info("MySQL 重连成功")
 
     def execute_query(self, sql: str) -> str:
+        start = time.perf_counter()
         try:
             validate_readonly_sql(sql)
             self._ensure_connection()
-            cursor = self.conn.cursor(dictionary=True)
-            cursor.execute(sql)
-            results = cursor.fetchall()
-            cursor.close()
+            with span("db_execute_query", {"service": "FacilityService", "sql": sql[:200]}):
+                cursor = self.conn.cursor(dictionary=True)
+                cursor.execute(sql)
+                results = cursor.fetchall()
+                cursor.close()
             for result in results:
                 for key, value in result.items():
                     if isinstance(value, (date, datetime, timedelta, Decimal)):
@@ -70,4 +74,37 @@ class FacilityService:
             )
         except Exception as e:
             logger.error(f"设施查询错误: {str(e)}")
+            return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+        finally:
+            db_query_duration_seconds.labels(service="FacilityService").observe(
+                time.perf_counter() - start
+            )
+
+    _SCHEMA_TABLES = ["campus_events", "campus_news", "canteen", "library_hours"]
+
+    def get_all_schemas(self) -> str:
+        """返回全部 4 张设施表的完整结构（字段名、类型、键、注释）"""
+        try:
+            self._ensure_connection()
+            all_schemas = {}
+            for table in self._SCHEMA_TABLES:
+                cursor = self.conn.cursor(dictionary=True)
+                cursor.execute(f"SHOW FULL COLUMNS FROM {table}")
+                columns = cursor.fetchall()
+                cursor.close()
+                cursor = self.conn.cursor(dictionary=True)
+                cursor.execute(f"SHOW INDEX FROM {table}")
+                indexes = cursor.fetchall()
+                cursor.close()
+                for col in columns:
+                    for key, value in col.items():
+                        if isinstance(value, (date, datetime, timedelta, Decimal)):
+                            col[key] = default_encoder(value)
+                all_schemas[table] = {"columns": columns, "indexes": indexes}
+            return json.dumps(
+                {"status": "success", "schemas": all_schemas},
+                cls=DateEncoder, ensure_ascii=False
+            )
+        except Exception as e:
+            logger.error(f"获取设施表结构失败: {str(e)}")
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)

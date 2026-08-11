@@ -34,6 +34,14 @@ def create_facility_mcp_server():
         logger.info(f"执行设施查询: {sql}")
         return service.execute_query(sql)
 
+    @facility_mcp.tool(
+        name="get_facility_schema",
+        description="返回 campus_events, campus_news, canteen, library_hours 四张表的完整结构"
+    )
+    def get_facility_schema() -> str:
+        logger.info("获取设施表结构")
+        return service.get_all_schemas()
+
     logger.info("=== 校园设施MCP服务器信息 ===")
     logger.info(f"名称: {facility_mcp.name}")
     logger.info(f"描述: {facility_mcp.instructions}")

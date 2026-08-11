@@ -5,11 +5,17 @@
 项目: SmartCampus — 基于A2A的CUHK校园生活助手
 创建日期: 2026/2/4
 描述: 课程查询 A2A Agent 服务器（端口 5005）
+
+v3.4 Tier 1 升级:
+  - MCP stateless Client (无需 initialize 握手)
+  - 动态获取 table schema (不再硬编码表结构)
+  - MCP URL 通过环境变量配置
 """
 import json
 import asyncio
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+import time
+
+from mcp import Client
 from python_a2a import A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -19,36 +25,84 @@ import pytz
 from app.config import Config
 from app.logging import logger
 from app.llm import create_llm
+from app.observability import (
+    span, set_trace_id, get_trace_id,
+    agent_llm_calls_total, agent_llm_duration_seconds,
+    mcp_tool_calls_total, mcp_tool_call_duration_seconds,
+)
 
 conf = Config()
 
-# 初始化LLM
+# ============ MCP Stateless Client URL ============
+MCP_COURSE_URL = conf.mcp_course_url
+
+# ============ LLM ============
 llm = create_llm()
 
-# 数据表 schema
-table_schema_string = """  # 定义课程数据表的SQL schema字符串，用于Prompt上下文
-CREATE TABLE IF NOT EXISTS course_info (
-id INT AUTO_INCREMENT PRIMARY KEY,
-course_code VARCHAR(20) NOT NULL COMMENT '课程代码',
-course_name VARCHAR(100) NOT NULL COMMENT '课程名称',
-department VARCHAR(50) NOT NULL COMMENT '开课院系',
-instructor VARCHAR(50) COMMENT '授课教师',
-schedule_day VARCHAR(10) COMMENT '上课日',
-start_time TIME COMMENT '开始时间',
-end_time TIME COMMENT '结束时间',
-classroom VARCHAR(50) COMMENT '教室编号',
-building VARCHAR(80) COMMENT '教学楼名称',
-credits INT DEFAULT 3 COMMENT '学分数',
-capacity INT COMMENT '课容量上限',
-enrolled INT DEFAULT 0 COMMENT '已选课人数',
-category VARCHAR(30) COMMENT '课程类别',
-description TEXT COMMENT '课程简介',
-update_time DATETIME COMMENT '数据更新时间',
-UNIQUE KEY unique_course_time (course_code, schedule_day, start_time)
-) ENGINE=INNODB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='课程信息表';
-"""
+# ============ 动态 Schema ============
+_schema_cache = {"text": "", "fetched_at": 0}
+_SCHEMA_TTL = 3600  # 缓存 1 小时
 
-# 生成SQL的提示词
+
+async def _fetch_schema_async():
+    """从 MCP Server 获取 course_info 表结构"""
+    async with Client(MCP_COURSE_URL) as client:
+        result = await client.call_tool("get_course_schema", {})
+        return result.content[0].text
+
+
+def _get_table_schema() -> str:
+    """获取表结构（带缓存），转为 SQL CREATE TABLE 格式的文本"""
+    global _schema_cache
+    now = time.time()
+    if _schema_cache["text"] and (now - _schema_cache["fetched_at"]) < _SCHEMA_TTL:
+        return _schema_cache["text"]
+
+    try:
+        raw = asyncio.run(_fetch_schema_async())
+        schema_data = json.loads(raw)
+        if schema_data.get("status") == "success":
+            # 将 SHOW FULL COLUMNS 结果转为 SQL DDL 风格的文本
+            columns = schema_data.get("columns", [])
+            lines = ["CREATE TABLE course_info ("]
+            for col in columns:
+                field = col.get("Field", "")
+                col_type = col.get("Type", "")
+                null = "NULL" if col.get("Null", "YES") == "YES" else "NOT NULL"
+                default = col.get("Default")
+                comment = col.get("Comment", "")
+                parts = [f"  {field} {col_type} {null}"]
+                if default is not None:
+                    parts.append(f"DEFAULT {default}")
+                if comment:
+                    parts.append(f"COMMENT '{comment}'")
+                lines.append("    ".join(parts) + ",")
+            # 索引
+            indexes = schema_data.get("indexes", [])
+            seen_keys = set()
+            for idx in indexes:
+                key_name = idx.get("Key_name", "")
+                if key_name == "PRIMARY" or key_name in seen_keys:
+                    continue
+                seen_keys.add(key_name)
+                col_name = idx.get("Column_name", "")
+                lines.append(f"  UNIQUE KEY {key_name} ({col_name}),")
+            lines.append(") ENGINE=INNODB DEFAULT CHARSET=utf8mb4;")
+            text = "\n".join(lines)
+            _schema_cache["text"] = text
+            _schema_cache["fetched_at"] = now
+            logger.info(f"[Schema] course_info 表结构已刷新 ({len(columns)} 列)")
+            return text
+    except Exception as e:
+        logger.warning(f"[Schema] 获取 course_info 表结构失败: {e}，使用缓存")
+        if _schema_cache["text"]:
+            return _schema_cache["text"]
+        raise
+
+    return _schema_cache["text"]
+
+
+# ============ SQL 生成 Prompt ============
 sql_prompt = ChatPromptTemplate.from_template(
     """
 系统提示：你是一个专业的CUHK课程SQL生成器，需要从对话历史（含用户的问题）中提取关键信息，然后基于course_info表生成SELECT语句。
@@ -83,33 +137,23 @@ course_info表结构：{table_schema_string}
 )
 
 
-# 定义查询函数
-async def get_courses(sql):
-    try:
-        # 启动 MCP server，通过streamable建立连接
-        async with streamable_http_client("http://127.0.0.1:8002/mcp") as (read, write):
-            # 使用读写通道创建 MCP 会话
-            async with ClientSession(read, write) as session:
-                try:
-                    await session.initialize()
-                    # 工具调用
-                    result = await session.call_tool("query_courses", {"sql": sql})
-                    result_data = json.loads(result) if isinstance(result, str) else result
-                    logger.info(f"课程查询结果：{result_data}")
-                    return result_data.content[0].text
-                except Exception as e:
-                    logger.error(f"课程 MCP 查询出错：{str(e)}")
-                    return {"status": "error", "message": f"课程 MCP 查询出错：{str(e)}"}
-    except Exception as e:
-        logger.error(f"连接或会话初始化时发生错误: {e}")
-        return {"status": "error", "message": "连接或会话初始化时发生错误"}
+# ============ MCP 工具调用 ============
+def _call_mcp_sync(tool_name: str, args: dict) -> str:
+    """同步封装：通过 stateless MCP Client 调用工具
+    每次调用创建独立的 Client（stateless HTTP — 无 session 无 initialize）"""
+    async def _call():
+        async with Client(MCP_COURSE_URL) as client:
+            result = await client.call_tool(tool_name, args)
+            return result.content[0].text
+    return asyncio.run(_call())
 
-# Agent卡片定义
+
+# ============ Agent 卡片 ============
 agent_card = AgentCard(
     name="CourseQueryAssistant",
-    description="基于LangChain提供CUHK课程查询服务的助手",
+    description="基于LangChain提供CUHK课程查询服务的助手，使用 MCP stateless 协议动态获取表结构",
     url="http://localhost:5005",
-    version="1.0.0",
+    version="1.1.0",
     capabilities={"streaming": True, "memory": True},
     skills=[
         AgentSkill(
@@ -120,24 +164,33 @@ agent_card = AgentCard(
     ]
 )
 
-# 课程查询服务器类
+
+# ============ A2A Server ============
 class CourseQueryServer(A2AServer):
     def __init__(self):
         super().__init__(agent_card=agent_card)
         self.llm = llm
         self.sql_prompt = sql_prompt
-        self.schema = table_schema_string
 
-    # 定义生成SQL查询方法，输入对话历史，返回SQL或追问JSON
+    def _get_schema(self) -> str:
+        """获取当前表结构文本（带缓存，首次调用时从 MCP 拉取）"""
+        try:
+            return _get_table_schema()
+        except Exception as e:
+            logger.error(f"无法获取表结构: {e}")
+            return "course_info 表包含课程代码、名称、教师、时间、地点等字段"
+
     def generate_sql_query(self, conversation: str) -> dict:
         try:
-            # 组装链
+            schema = self._get_schema()
             chain = self.sql_prompt | self.llm
-            # 调用链
             current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
-            output = chain.invoke({"conversation": conversation, "current_date": current_date, "table_schema_string": self.schema}).content.strip()
+            output = chain.invoke({
+                "conversation": conversation,
+                "current_date": current_date,
+                "table_schema_string": schema,
+            }).content.strip()
             logger.info(f"原始 LLM 输出: {output}")
-            # 处理结果，返回字典
             if output.startswith('{'):
                 return json.loads(output)
             return {"status": "sql", "sql": output}
@@ -145,54 +198,91 @@ class CourseQueryServer(A2AServer):
             logger.error(f"SQL生成失败: {str(e)}")
             return {"status": "input_required", "message": "查询无效，请提供课程代码或名称。"}
 
-    # 处理任务：提取输入，生成SQL，调用MCP，格式化结果
     def handle_task(self, task):
-        # 1 提取输入
+        # 从 A2A 消息中提取 trace_id，实现跨进程链路关联
+        trace_id = (task.message or {}).get("_trace_id", "")
+        if trace_id:
+            set_trace_id(trace_id)
+
         content = (task.message or {}).get("content", {})
         conversation = content.get("text", "") if isinstance(content, dict) else ""
         logger.info(f"对话历史及用户问题: {conversation}")
 
-        try:
-            # 2 基于用户问题生成SQL查询
-            gen_result = self.generate_sql_query(conversation)
-            if gen_result["status"] == "input_required":
-                task.status = TaskStatus(state=TaskState.INPUT_REQUIRED,
-                                         message={"role": "agent", "content": {"text": gen_result["message"]}})
+        with span("agent_handle_task", {"agent": "CourseQueryAssistant"}):
+            try:
+                # 1. 生成 SQL
+                llm_start = time.perf_counter()
+                llm_status = "ok"
+                gen_result = self.generate_sql_query(conversation)
+                agent_llm_duration_seconds.labels(agent_name="CourseQueryAssistant").observe(
+                    time.perf_counter() - llm_start
+                )
+
+                if gen_result["status"] == "input_required":
+                    agent_llm_calls_total.labels(agent_name="CourseQueryAssistant", status="input_required").inc()
+                    task.status = TaskStatus(
+                        state=TaskState.INPUT_REQUIRED,
+                        message={"role": "agent", "content": {"text": gen_result["message"]}},
+                    )
+                    return task
+
+                agent_llm_calls_total.labels(agent_name="CourseQueryAssistant", status="sql_generated").inc()
+                sql_query = gen_result["sql"]
+                logger.info(f"生成的SQL查询: {sql_query}")
+
+                # 2. 通过 stateless MCP Client 执行查询 (传递 trace_id)
+                mcp_start = time.perf_counter()
+                mcp_status = "ok"
+                try:
+                    course_result = _call_mcp_sync("query_courses", {"sql": sql_query})
+                    mcp_tool_call_duration_seconds.labels(
+                        server="course", tool="query_courses"
+                    ).observe(time.perf_counter() - mcp_start)
+                except Exception:
+                    mcp_status = "error"
+                    mcp_tool_call_duration_seconds.labels(
+                        server="course", tool="query_courses"
+                    ).observe(time.perf_counter() - mcp_start)
+                    raise
+                finally:
+                    mcp_tool_calls_total.labels(
+                        server="course", tool="query_courses", status=mcp_status
+                    ).inc()
+
+                # 3. 格式化结果
+                response = json.loads(course_result) if isinstance(course_result, str) else course_result
+                logger.info(f"MCP 返回: {response}")
+                if response.get("status") == "success":
+                    data = response.get("data", [])
+                    response_text = "\n".join([
+                        f"{d['course_code']} {d['course_name']} | {d['instructor']} | "
+                        f"{d['schedule_day']} {d['start_time']}-{d['end_time']} | "
+                        f"{d['building']} {d['classroom']} | {d['category']} | "
+                        f"学分:{d['credits']} | 已选:{d['enrolled']}/{d['capacity']}"
+                        for d in data
+                    ])
+                    task.artifacts = [{"parts": [{"type": "text", "text": response_text}]}]
+                    task.status = TaskStatus(state=TaskState.COMPLETED)
+                elif response.get("status") == "no_data":
+                    response_text = response.get("message", "请重新输入查询的课程代码或名称。")
+                    task.status = TaskStatus(
+                        state=TaskState.INPUT_REQUIRED,
+                        message={"role": "agent", "content": {"text": response_text}},
+                    )
+                else:
+                    response_text = response.get("message", "查询失败，请重试或提供更多细节。")
+                    task.status = TaskStatus(
+                        state=TaskState.FAILED,
+                        message={"role": "agent", "content": {"text": response_text}},
+                    )
                 return task
-
-            sql_query = gen_result["sql"]
-            logger.info(f"生成的SQL查询: {sql_query}")
-
-            # 3 调用MCP
-            course_result = asyncio.run(get_courses(sql_query))
-
-            # 4 格式化结果
-            response = json.loads(course_result) if isinstance(course_result, str) else course_result
-            logger.info(f"MCP 返回: {response}")
-            if response.get("status") == "success":
-                data = response.get("data", [])
-                response_text = "\n".join([
-                    f"{d['course_code']} {d['course_name']} | {d['instructor']} | {d['schedule_day']} {d['start_time']}-{d['end_time']} | {d['building']} {d['classroom']} | {d['category']} | 学分:{d['credits']} | 已选:{d['enrolled']}/{d['capacity']}"
-                    for d in data])
-
-                task.artifacts = [{"parts": [{"type": "text", "text": response_text}]}]
-                task.status = TaskStatus(state=TaskState.COMPLETED)
-            elif response.get("status") == "no_data":
-                response_text = response.get("message", "请重新输入查询的课程代码或名称。")
-                task.status = TaskStatus(state=TaskState.INPUT_REQUIRED,
-                                         message={"role": "agent", "content": {"text": response_text}})
-            else:
-                response_text = response.get("message", "查询失败，请重试或提供更多细节。")
-                task.status = TaskStatus(state=TaskState.FAILED,
-                                         message={"role": "agent", "content": {"text": response_text}})
-
-            return task
-        except Exception as e:
-            logger.error(f"查询失败: {str(e)}")
-            task.status = TaskStatus(state=TaskState.FAILED,
-                                     message={"role": "agent",
-                                              "content": {"text": f"查询失败: {str(e)} 请重试或提供更多细节。"}})
-            return task
+            except Exception as e:
+                logger.error(f"查询失败: {str(e)}")
+                task.status = TaskStatus(
+                    state=TaskState.FAILED,
+                    message={"role": "agent", "content": {"text": f"查询失败: {str(e)} 请重试或提供更多细节。"}},
+                )
+                return task
 
 
 if __name__ == "__main__":
@@ -200,6 +290,7 @@ if __name__ == "__main__":
     print("\n=== 服务器信息 ===")
     print(f"名称: {course_server.agent_card.name}")
     print(f"描述: {course_server.agent_card.description}")
+    print(f"MCP URL: {conf.mcp_course_url}")
     print("\n技能:")
     for skill in course_server.agent_card.skills:
         print(f"- {skill.name}: {skill.description}")

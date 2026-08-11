@@ -31,6 +31,14 @@ class Config:
         self.password = os.getenv('DB_PASSWORD', '123456')
         self.database = os.getenv('DB_NAME', 'cuhk_campus')
 
+        # MCP 服务地址（Agent 连接 MCP Server 的 URL）
+        self.mcp_course_url = os.getenv(
+            "MCP_COURSE_URL", "http://127.0.0.1:8002/mcp"
+        )
+        self.mcp_facility_url = os.getenv(
+            "MCP_FACILITY_URL", "http://127.0.0.1:8001/mcp"
+        )
+
         # 日志配置
         self.log_file = os.path.join(_project_dir, 'logs', 'app.log')
 
