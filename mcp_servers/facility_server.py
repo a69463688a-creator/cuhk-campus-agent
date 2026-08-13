@@ -8,12 +8,22 @@
       表提供设施查询工具（端口 8001）
 """
 from mcp.server import MCPServer
+from mcp.server.mcpserver.context import Context
 
 from app.config import Config
 from app.logging import logger
+from app.observability import set_trace_id
 from data.database import FacilityService
 
 conf = Config()
+
+
+def _inject_trace_id(ctx: Context) -> None:
+    """从 MCP 请求的 _meta 中提取 trace_id 并注入当前上下文，实现跨进程链路关联"""
+    meta = ctx.request_context.meta or {}
+    trace_id = meta.get("trace_id")
+    if trace_id:
+        set_trace_id(trace_id)
 
 
 # 创建设施查询MCP服务器
@@ -30,7 +40,8 @@ def create_facility_mcp_server():
         name="query_facilities",
         description="查询校园设施数据，输入 SQL，如 'SELECT * FROM canteen WHERE location LIKE \"%Chung Chi%\"'"
     )
-    def query_facilities(sql: str) -> str:
+    def query_facilities(sql: str, ctx: Context) -> str:
+        _inject_trace_id(ctx)
         logger.info(f"执行设施查询: {sql}")
         return service.execute_query(sql)
 
@@ -38,7 +49,8 @@ def create_facility_mcp_server():
         name="get_facility_schema",
         description="返回 campus_events, campus_news, canteen, library_hours 四张表的完整结构"
     )
-    def get_facility_schema() -> str:
+    def get_facility_schema(ctx: Context) -> str:
+        _inject_trace_id(ctx)
         logger.info("获取设施表结构")
         return service.get_all_schemas()
 

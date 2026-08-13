@@ -46,8 +46,12 @@ _SCHEMA_TTL = 3600
 
 async def _fetch_schema_async():
     """从 MCP Server 获取全部设施表结构"""
+    trace_id = get_trace_id()
     async with Client(MCP_FACILITY_URL) as client:
-        result = await client.call_tool("get_facility_schema", {})
+        result = await client.call_tool(
+            "get_facility_schema", {},
+            meta={"trace_id": trace_id} if trace_id else None,
+        )
         return result.content[0].text
 
 
@@ -180,11 +184,18 @@ SELECT id, library_name, area, day_of_week, date, open_time, close_time, is_clos
 # ============ MCP 工具调用 ============
 def _call_mcp_sync(tool_name: str, args: dict) -> str:
     """同步封装：通过 stateless MCP Client 调用工具
-    每次调用创建独立的 Client（stateless HTTP — 无 session 无 initialize）"""
+    每次调用创建独立的 Client（stateless HTTP — 无 session 无 initialize）
+    通过 _meta 字段传递 trace_id，实现跨进程链路关联"""
+    trace_id = get_trace_id()
+
     async def _call():
         async with Client(MCP_FACILITY_URL) as client:
-            result = await client.call_tool(tool_name, args)
+            result = await client.call_tool(
+                tool_name, args,
+                meta={"trace_id": trace_id} if trace_id else None,
+            )
             return result.content[0].text
+
     return asyncio.run(_call())
 
 

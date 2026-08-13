@@ -4,6 +4,29 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 ---
 
+## [v3.5.1] — 2026-08-13
+
+### 🔗 补全全链路 Trace 传播（Agent → MCP → DB）
+
+#### 修复（Fixed）
+
+- **Agent → MCP 链路 trace_id 未接线**：`observability.py` 声称「跨进程传播通过 MCP `_meta` 字段传递」，
+  但实际未实现——Agent 调用 `call_tool` 时未携带 trace_id，MCP 服务器也未提取，导致 MCP 侧的
+  `db_execute_query` span 生成全新 trace_id，与上游 Web/Agent 链路断开。
+  - `agents/course_agent.py` — `_call_mcp_sync` / `_fetch_schema_async` 通过 `call_tool(meta={"trace_id": ...})` 下发
+  - `agents/facility_agent.py` — 同上
+  - `mcp_servers/course_server.py` — 工具函数新增 `ctx: Context` 参数，新增 `_inject_trace_id()` 从请求 `_meta` 提取并注入
+  - `mcp_servers/facility_server.py` — 同上
+- **mcp 2.0.0 依赖缺失**：`pydantic 2.13.x` 与 `typing-inspection 0.4.1` 不兼容、缺 `opentelemetry-api`，
+  导致 `import mcp` 直接崩溃。修复：升级 `typing-inspection → 0.4.4`、补装 `opentelemetry-api → 1.44.0`。
+
+#### 验证（Verified）
+
+- 端到端测试：MCP 客户端经 `_meta` 下发 trace_id，`logs/app.log` 中工具日志与 `db_execute_query`
+  span 的 `trace_id` 完全一致（此前为随机新 trace_id）。course（8002）与 facility（8001）两条链路均通过。
+
+---
+
 ## [v3.2.0] — 2026-08-10
 
 ### 🐳 Docker 容器化部署 + 代码清理

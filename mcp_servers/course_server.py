@@ -13,11 +13,12 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.context import Context
 
 from app.config import Config
 from app.logging import logger
 from app.security import validate_readonly_sql
-from app.observability import span, db_query_duration_seconds
+from app.observability import span, db_query_duration_seconds, set_trace_id
 from data.format import DateEncoder, default_encoder
 
 conf = Config()
@@ -105,6 +106,14 @@ class CourseService:
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
+def _inject_trace_id(ctx: Context) -> None:
+    """从 MCP 请求的 _meta 中提取 trace_id 并注入当前上下文，实现跨进程链路关联"""
+    meta = ctx.request_context.meta or {}
+    trace_id = meta.get("trace_id")
+    if trace_id:
+        set_trace_id(trace_id)
+
+
 # 创建课程MCP服务器
 def create_course_mcp_server():
     course_mcp = MCPServer(
@@ -119,7 +128,8 @@ def create_course_mcp_server():
         name="query_courses",
         description="查询课程数据，输入 SQL，如 'SELECT * FROM course_info WHERE course_code = \"CSCI2100\"'"
     )
-    def query_courses(sql: str) -> str:
+    def query_courses(sql: str, ctx: Context) -> str:
+        _inject_trace_id(ctx)
         logger.info(f"执行课程查询: {sql}")
         return service.execute_query(sql)
 
@@ -127,7 +137,8 @@ def create_course_mcp_server():
         name="get_course_schema",
         description="返回 course_info 表的完整结构，包括字段名、类型、注释和索引信息"
     )
-    def get_course_schema() -> str:
+    def get_course_schema(ctx: Context) -> str:
+        _inject_trace_id(ctx)
         logger.info("获取 course_info 表结构")
         return service.get_table_schema()
 
