@@ -16,7 +16,7 @@ import time
 import asyncio
 import subprocess
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional
 
 import pytz
 import requests
@@ -34,6 +34,7 @@ from app.llm import create_llm
 from app.config import Config
 from app.logging import logger
 from app.prompts import SmartCampusPrompts
+from app.memory import MemoryManager
 from app.observability import (
     span, trace, new_trace_id, set_trace_id, get_trace_id,
     http_requests_total, http_request_duration_seconds,
@@ -107,7 +108,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 # ============ 全局状态 ============
 agent_network: Optional[AgentNetwork] = None
 llm: Optional[ChatOpenAI] = None
-sessions: Dict[str, List[dict]] = {}  # session_id -> [{role, content, timestamp}]
+memory: Optional[MemoryManager] = None  # 持久化分层记忆（替换原 sessions 内存字典）
 
 # Greeting patterns
 GREETING_PATTERNS = [
@@ -120,10 +121,14 @@ GREETING_PATTERNS = [
 # ============ 启动事件 ============
 @app.on_event("startup")
 async def startup():
-    global agent_network, llm
+    global agent_network, llm, memory
 
     # 初始化 LLM
     llm = create_llm()
+
+    # 初始化持久化分层记忆（替换原 sessions 内存字典）
+    memory = MemoryManager(conf)
+    await asyncio.to_thread(memory.warmup)  # 预热 embedding，消除冷启动延迟
 
     # 初始化 AgentNetwork（2个代理）
     agent_network = AgentNetwork(name="CUHK Campus Assistant Network")
@@ -254,11 +259,17 @@ def check_greeting(query: str) -> Optional[str]:
     return None
 
 
-def get_session(session_id: str) -> List[dict]:
-    """获取或创建会话"""
-    if session_id not in sessions:
-        sessions[session_id] = []
-    return sessions[session_id]
+def _get_memory() -> MemoryManager:
+    """获取全局记忆管理器（startup 未触发时懒初始化）。"""
+    global memory
+    if memory is None:
+        memory = MemoryManager(conf)
+    return memory
+
+
+async def _consolidate_memory(session_id: str):
+    """后台巩固记忆：滚动摘要 + 长期记忆抽取（不阻塞主链路）。"""
+    await asyncio.to_thread(_get_memory().consolidate, session_id)
 
 
 # ============ 意图识别 ============
@@ -275,7 +286,7 @@ async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
     _llm = llm or create_llm()  # 防御：若 startup 未触发，降级到 create_llm()
     chain = SmartCampusPrompts.intent_prompt() | _llm
     current_date = datetime.now(TZ).strftime('%Y-%m-%d')
-    context_lines = '\n'.join(conversation_history.split("\n")[-6:])
+    context_lines = conversation_history  # 由 MemoryManager.recall() 统一控制 token 预算，此处不再硬截断
 
     with span("llm_recognize_intent"):
         intent_response = (await chain.ainvoke({
@@ -369,7 +380,7 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
         if agent_network is None:
             raise RuntimeError("AgentNetwork 未初始化（请确保 startup 事件已触发）")
         agent = agent_network.get_agent(agent_name)
-        chat_history = '\n'.join(conversation_history.split("\n")[-7:-1]) + f'\nUser: {query_str}'
+        chat_history = conversation_history + f'\nUser: {query_str}'  # recall 已控制上下文预算
         message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
         # 将 trace_id 注入 A2A 消息，Agent 端可提取用于链路关联
         message_dict = message.to_dict()
@@ -412,21 +423,19 @@ async def summarize_response(agent_name: str, query_str: str, agent_result: str)
 # ============ 核心处理逻辑（生成器版本，用于 WebSocket 流式） ============
 async def process_query_stream(query: str, session_id: str):
     """流式处理查询，逐 token yield"""
-    session = get_session(session_id)
+    mem = _get_memory()
 
-    # 构建对话历史
-    history_text = ""
-    for msg in session:
-        role_prefix = "User" if msg["role"] == "user" else "Assistant"
-        history_text += f"\n{role_prefix}: {msg['content']}"
+    # 召回分层记忆上下文（工作窗口 + 语义记忆 + 滚动摘要）
+    history_text = await asyncio.to_thread(mem.recall, session_id, query)
 
-    # 记录用户消息
-    session.append({"role": "user", "content": query, "timestamp": datetime.now(TZ).isoformat()})
+    # 持久化本轮用户消息，并后台巩固（滚动摘要 + 长期记忆抽取）
+    await asyncio.to_thread(mem.save, session_id, "user", query)
+    asyncio.create_task(_consolidate_memory(session_id))
 
     # 问候检查
     greeting = check_greeting(query)
     if greeting:
-        session.append({"role": "assistant", "content": greeting, "timestamp": datetime.now(TZ).isoformat()})
+        await asyncio.to_thread(mem.save, session_id, "assistant", greeting)
         yield greeting, True, None
         return
 
@@ -436,19 +445,19 @@ async def process_query_stream(query: str, session_id: str):
     except Exception as e:
         logger.error(f"意图识别失败: {e}")
         error_msg = "抱歉，我暂时无法理解您的问题，请换种方式描述一下？"
-        session.append({"role": "assistant", "content": error_msg, "timestamp": datetime.now(TZ).isoformat()})
+        await asyncio.to_thread(mem.save, session_id, "assistant", error_msg)
         yield error_msg, True, None
         return
 
     # 超出范围
     if "out_of_scope" in intents:
-        session.append({"role": "assistant", "content": follow_up_message, "timestamp": datetime.now(TZ).isoformat()})
+        await asyncio.to_thread(mem.save, session_id, "assistant", follow_up_message)
         yield follow_up_message, True, None
         return
 
     # 追问
     if follow_up_message and not intents:
-        session.append({"role": "assistant", "content": follow_up_message, "timestamp": datetime.now(TZ).isoformat()})
+        await asyncio.to_thread(mem.save, session_id, "assistant", follow_up_message)
         yield follow_up_message, True, None
         return
 
@@ -489,7 +498,7 @@ async def process_query_stream(query: str, session_id: str):
     full_response = "\n\n".join(responses) if responses else "抱歉，没有找到相关信息。"
 
     # 记录助手回复
-    session.append({"role": "assistant", "content": full_response, "timestamp": datetime.now(TZ).isoformat()})
+    await asyncio.to_thread(mem.save, session_id, "assistant", full_response)
     yield full_response, True, None
 
 
@@ -502,25 +511,23 @@ async def root():
 
 @app.post("/api/create_session")
 async def create_session():
-    """创建新会话"""
+    """创建新会话（记忆按需落库，无需预分配）"""
     session_id = str(uuid.uuid4())
-    sessions[session_id] = []
     logger.info(f"新会话创建: {session_id[:8]}...")
     return {"session_id": session_id}
 
 
 @app.get("/api/history/{session_id}")
 async def get_history(session_id: str):
-    """获取会话历史"""
-    history = get_session(session_id)
+    """获取会话历史（从持久化记忆读取）"""
+    history = _get_memory().get_history(session_id)
     return {"session_id": session_id, "history": history}
 
 
 @app.delete("/api/history/{session_id}")
 async def clear_history(session_id: str):
-    """清除会话历史"""
-    if session_id in sessions:
-        sessions[session_id] = []
+    """清除会话历史（消息 + 摘要；长期记忆为跨会话资产，保留）"""
+    _get_memory().clear(session_id)
     return {"status": "success", "message": "历史记录已清除"}
 
 

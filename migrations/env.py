@@ -24,7 +24,7 @@ if config.config_file_name is not None:
 app_conf = AppConfig()
 DB_URL = (
     f"mysql+pymysql://{app_conf.user}:{app_conf.password}"
-    f"@{app_conf.host}/{app_conf.database}"
+    f"@{app_conf.host}:{app_conf.port}/{app_conf.database}"
     f"?charset=utf8mb4"
 )
 

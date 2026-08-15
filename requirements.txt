@@ -39,3 +39,6 @@ tenacity>=9.0.0
 # 爬虫
 beautifulsoup4>=4.13.0
 schedule>=1.2.0
+
+# 记忆系统（向量计算：余弦相似度 / embedding 序列化）
+numpy>=1.24.0

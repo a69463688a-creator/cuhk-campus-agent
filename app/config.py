@@ -27,6 +27,7 @@ class Config:
 
         # 数据库配置（环境变量 > 默认值）
         self.host = os.getenv('DB_HOST', 'localhost')
+        self.port = int(os.getenv('DB_PORT', '3306'))
         self.user = os.getenv('DB_USER', 'root')
         self.password = os.getenv('DB_PASSWORD', '123456')
         self.database = os.getenv('DB_NAME', 'cuhk_campus')
@@ -52,3 +53,15 @@ class Config:
         }
 
         self.temperature = 0.1
+
+        # ============ 记忆系统配置（持久化分层记忆） ============
+        # 本地 embedding（Ollama bge-m3，经 HTTP 调用，无 torch 重依赖）
+        self.embedding_base_url = os.getenv("EMBEDDING_BASE_URL", "http://localhost:11434")
+        self.embedding_model = os.getenv("EMBEDDING_MODEL", "bge-m3")
+        self.embedding_dim = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+        # 记忆召回与巩固
+        self.memory_window_tokens = int(os.getenv("MEMORY_WINDOW_TOKENS", "2000"))       # 单次召回上下文预算
+        self.memory_summary_trigger_turns = int(os.getenv("MEMORY_SUMMARY_TRIGGER_TURNS", "10"))  # 触发滚动摘要的消息条数
+        self.memory_semantic_top_k = int(os.getenv("MEMORY_SEMANTIC_TOP_K", "5"))        # 语义召回 top-K
+        self.memory_dedup_threshold = float(os.getenv("MEMORY_DEDUP_THRESHOLD", "0.9"))  # 长期记忆去重余弦阈值

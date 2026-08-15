@@ -27,6 +27,7 @@ class FacilityService:
     """封装 campus_events / campus_news / canteen / library_hours 的 MySQL 查询"""
     def __init__(self):
         self.host = conf.host
+        self.port = conf.port
         self.user = conf.user
         self.password = conf.password
         self.database = conf.database
@@ -36,6 +37,7 @@ class FacilityService:
         """建立数据库连接"""
         self.conn = mysql.connector.connect(
             host=self.host,
+            port=self.port,
             user=self.user,
             password=self.password,
             database=self.database
