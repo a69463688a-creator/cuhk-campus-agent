@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# 虚拟环境和依赖
+.conda/
+node_modules/
+
+# 日志和数据
+logs/
+*.log
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+
+# 临时文件
+*.tmp
+*.bak
+.pytest_cache/
+.playwright-mcp/
+
+# 大型静态资源
+static/
