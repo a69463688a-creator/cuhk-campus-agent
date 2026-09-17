@@ -308,7 +308,7 @@ async def call_orchestrator(query: str, conversation_history: str, on_progress=N
                 trace_id,
                 on_progress=on_progress,
             )
-            state = str(raw_response.status.state)
+            state = raw_response.status.state.value  # TaskState(str,Enum) → "completed"/"input-required"/"failed"
             logger.info(f"OrchestratorAgent 响应状态: {state}")
             status = state
 

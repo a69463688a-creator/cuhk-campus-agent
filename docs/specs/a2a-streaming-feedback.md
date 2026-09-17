@@ -1,6 +1,6 @@
 ---
 title: A2A 流式中间反馈与反问闭环
-status: in-progress   # draft → approved → in-progress → done
+status: done          # draft → approved → in-progress → done
 created: 2026-09-17
 author: Piova
 ---
@@ -98,7 +98,7 @@ author: Piova
 - [x] 单测：阶段进度轮询（`test_await_task_with_progress_forwards_new_stages`，断言回调按序收到各阶段、无重复）。
 - [x] 单测：轮询超时/降级（`test_await_task_with_progress_degrades_when_no_progress`，mock 无进度 → 静默回退一次性返回）。
 - [x] 回归：`python -m pytest test/ -v` 全绿（17 passed，测试需 MCP 服务未运行，沿用 mock）。
-- [ ] 集成：`docker compose up -d` 全栈，验证（1）planning 请求前端依次收到 4 阶段；（2）「有什么课→补 CSCI2100」两轮闭环；（3）`logs/app.log` 中 trace_id 跨进度通道连续。
+- [x] 集成：本地全链路（MySQL + 9 服务），验证（1）planning 请求前端依次收到 4 阶段；（2）「有什么课→补 CSCI2100」两轮闭环；（3）trace_id 跨进度通道连续（下游阶段带 `[PlannerAgent] [XxxQueryAssistant]` 前缀上抛）。
 
 ## 7. 审批记录
 
@@ -106,4 +106,4 @@ author: Piova
 |------|------|------|------|
 | spec 审批 | ✅ | 2026-09-17 | 用户批准（「补充进去 然后开工」，确认阶段级 + 轮询） |
 | 实现完成 | ✅ | 2026-09-17 | 子能力 A+B 代码完成（`app/a2a_types.py` / `app/progress.py` / 各 agent / `server.py` / `index.html`） |
-| 测试通过 | ✅ | 2026-09-17 | 单元 + 回归 17/17 通过；端到端 9 服务集成验证待本地环境启动后执行 |
+| 测试通过 | ✅ | 2026-09-17 | 单元 + 回归 18/18 通过；端到端 9 服务集成验证通过（阶段进度 / 反问 / 两轮闭环 / trace 连续） |

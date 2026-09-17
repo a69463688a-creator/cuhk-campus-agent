@@ -26,6 +26,24 @@ def test_agent_result_needs_input():
     assert AgentResult("failed", "查询失败").needs_input is False
 
 
+def test_task_state_value_is_canonical_string():
+    """回归：TaskState 是 (str, Enum)，str(member) 得 'TaskState.COMPLETED' 而非 'completed'。
+
+    委派链路必须用 .value 取规范字符串；否则 `state == 'completed'` 判定失效，
+    结果被当成「非 completed」返回空文本（曾导致端到端空回答）。"""
+    from python_a2a import TaskState
+
+    assert TaskState.COMPLETED.value == "completed"
+    assert TaskState.INPUT_REQUIRED.value == "input-required"
+    assert TaskState.FAILED.value == "failed"
+    # 陷阱守护：str(member) 不是值本身
+    assert str(TaskState.COMPLETED) != "completed"
+    assert str(TaskState.INPUT_REQUIRED) != "input-required"
+    # 用 .value 构造的 AgentResult 判定正确
+    assert AgentResult(TaskState.COMPLETED.value, "x").needs_input is False
+    assert AgentResult(TaskState.INPUT_REQUIRED.value, "x").needs_input is True
+
+
 def test_status_message_text_variants():
     # dict: content 为 dict（含 text）
     assert status_message_text({"role": "agent", "content": {"text": "追问文本"}}) == "追问文本"

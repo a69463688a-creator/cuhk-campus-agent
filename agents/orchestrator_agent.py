@@ -204,7 +204,7 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
                 trace_id,
                 on_progress=_on_progress,
             )
-            state = str(raw_response.status.state)
+            state = raw_response.status.state.value  # TaskState(str,Enum) → "completed"/"input-required"/"failed"
             logger.info(f"{agent_name} 响应状态: {state}")
             status = state
 

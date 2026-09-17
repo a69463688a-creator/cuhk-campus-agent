@@ -14,7 +14,7 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 #### 新增（Added）
 - `app/a2a_types.py` — `AgentResult`（区分结果 / 追问，`needs_input` 判定）+ `status_message_text`（TaskStatus.message 多形态提取）
 - `app/progress.py` — 阶段常量 `STAGE_*` + 线程安全 `ProgressStore` + `/progress/<trace_id>` 端点 + `await_task_with_progress`（后台阻塞等结果 + 前台轮询上抛）
-- `test/test_streaming_feedback.py` — 反问语义 / 进度轮询 / 降级 5 项单元测试
+- `test/test_streaming_feedback.py` — 反问语义 / 进度轮询 / 降级 / TaskState 规范字符串回归 6 项单元测试
 
 #### 变更（Changed）
 - `agents/course_agent.py` / `facility_agent.py` / `transport_agent.py` — 处理过程按阶段上报（生成 SQL / 解析意图 / 执行 MCP 查询），override `setup_routes` 注册进度端点
@@ -26,6 +26,10 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 #### 技术选型
 - 阶段级进度用 **轮询（`/progress/<trace_id>`）而非 SSE**：阶段几秒一变，轮询短连接对 worker 池更友好，容错简单；token 级留后续
+
+#### 修复（Fixed）
+- `app/server.py` / `agents/orchestrator_agent.py` / `agents/planner_agent.py` / `app/cli.py` — 委派结果状态用 `str(TaskState)` 得 `"TaskState.COMPLETED"`（≠ `"completed"`），导致 completed 被当非 completed 返回空文本 → 改用 `status.state.value` 取规范字符串
+- `app/observability.py` — `_NoopMetric` 缺 `dec()`，WebSocket 关闭时 `websocket_connections.dec()` 抛 `AttributeError`（prometheus_client 未装时）→ 补 `dec()`
 
 #### 未改动（Unchanged）
 - 无数据库迁移、无新增 MCP 服务

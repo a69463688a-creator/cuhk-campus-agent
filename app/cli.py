@@ -44,7 +44,7 @@ def call_orchestrator(query: str, history: str) -> str:
     task = Task(id="task-" + str(uuid.uuid4()), message=message.to_dict())
 
     raw_response = asyncio.run(agent.send_task_async(task))
-    state = str(raw_response.status.state)
+    state = raw_response.status.state.value  # TaskState(str,Enum) → "completed"/"input-required"/"failed"
     if state == 'completed':
         return raw_response.artifacts[0]['parts'][0]['text']
     text = status_message_text(raw_response.status.message)

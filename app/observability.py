@@ -239,6 +239,9 @@ except ImportError:
         def inc(self, val=1):
             pass
 
+        def dec(self, val=1):
+            pass
+
         def observe(self, val):
             pass
 
