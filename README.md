@@ -8,39 +8,46 @@
 用户输入（自然语言 / Web UI）
     │
     ▼
-┌──────────────────────────────────────────┐
-│  app/server.py  —  FastAPI Web 网关 (:8100) │
-│  • 意图识别（LLM: DeepSeek-v4-flash）        │
-│  • 天气查询（Open-Meteo 直连）                │
-│  • 结果总结与推荐                              │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  app/server.py — FastAPI Web 网关 (:8100)      │
+│  • 纯 A2A client（不再调 LLM）                  │
+│  • 分层记忆召回/落库 + 问候短路 + trace 注入     │
+└──────────────────────────────────────────────┘
     │ A2A Protocol (python-a2a v0.5.10)
     ▼
-┌──────────────────────────────────────────┐
-│         A2A Agent 层（2 个 Agent）          │
-│                                          │
-│  CourseQueryAssistant   :5005            │
-│  └─ 课程查询（课程代码/教师/时间/地点）        │
-│                                          │
-│  FacilityQueryAssistant  :5006           │
-│  └─ 活动/新闻/餐厅/图书馆 4 合 1            │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  OrchestratorAgent — 编排 Agent (:5007)        │
+│  • 意图识别（LLM: DeepSeek-v4-flash）           │
+│  • 并行委派 + 结果聚合                          │
+│  • 天气直连 / 推荐直调 LLM                       │
+└──────────────────────────────────────────────┘
+    │ A2A Protocol（agent→agent 委派）
+    ▼
+┌──────────────────────────────────────────────┐
+│         Specialist Agent 层（2 个 Agent）       │
+│                                              │
+│  CourseQueryAssistant   :5005                │
+│  └─ 课程查询（课程代码/教师/时间/地点）            │
+│                                              │
+│  FacilityQueryAssistant  :5006               │
+│  └─ 活动/新闻/餐厅/图书馆 4 合 1                │
+└──────────────────────────────────────────────┘
     │ MCP Protocol (streamable-http)
     ▼
-┌──────────────────────────────────────────┐
-│        MCP Server 层（2 个 Server）         │
-│                                          │
-│  Course MCP   :8002  → course_info       │
-│  Facility MCP :8001  → campus_events      │
-│                      → campus_news       │
-│                      → canteen           │
-│                      → library_hours     │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│        MCP Server 层（2 个 Server）             │
+│                                              │
+│  Course MCP   :8002  → course_info           │
+│  Facility MCP :8001  → campus_events          │
+│                      → campus_news           │
+│                      → canteen               │
+│                      → library_hours         │
+└──────────────────────────────────────────────┘
     │ mysql-connector-python
     ▼
-┌──────────────────────────────────────────┐
-│     MySQL 8.0  (cuhk_campus / 5 张表)      │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│     MySQL 8.0  (cuhk_campus / 5 张表)          │
+└──────────────────────────────────────────────┘
 ```
 
 ## 技术栈
@@ -60,13 +67,14 @@
 ```
 SmartCampus/
 ├── app/                         # 应用核心层
-│   ├── server.py                # FastAPI Web 网关（:8100）
+│   ├── server.py                # FastAPI Web 网关（:8100，纯 A2A client）
 │   ├── cli.py                   # CLI 命令行交互入口
 │   ├── config.py                # 全局配置（.env 驱动）
 │   ├── prompts.py               # LLM Prompt 模板
 │   └── logging.py               # 日志系统
 │
 ├── agents/                      # A2A Agent 层
+│   ├── orchestrator_agent.py    # 编排 Agent（:5007）—— 意图识别 + 委派 + 聚合
 │   ├── course_agent.py          # 课程查询 Agent（:5005）
 │   └── facility_agent.py        # 设施查询 Agent（:5006）
 │
@@ -115,6 +123,8 @@ SmartCampus/
 
 ## 意图路由
 
+> 意图识别与路由由 OrchestratorAgent(:5007) 完成，下表为意图 → 目标 agent 的映射。
+
 | 意图 | 描述 | 路由目标 |
 |------|------|---------|
 | `course` | 课程查询（代码/教师/时间/地点） | CourseQueryAssistant |
@@ -129,6 +139,7 @@ SmartCampus/
 | 服务 | 端口 | 协议 |
 |------|------|------|
 | Web 前端 | 8100 | HTTP (FastAPI) |
+| OrchestratorAgent | 5007 | A2A/JSON |
 | CourseQueryAssistant | 5005 | A2A/JSON |
 | FacilityQueryAssistant | 5006 | A2A/JSON |
 | Course MCP | 8002 | MCP (streamable-http) |
@@ -174,12 +185,13 @@ mysql -u root -p -D cuhk_campus < sql/docker_init.sql
 cp .env.example .env
 # 编辑 .env 填入真实值
 
-# 4. 启动（需 5 个终端窗口）
+# 4. 启动（需 6 个终端窗口）
 python mcp_servers/course_server.py      # 终端 1: Course MCP :8002
 python mcp_servers/facility_server.py    # 终端 2: Facility MCP :8001
 python agents/course_agent.py            # 终端 3: Course Agent :5005
 python agents/facility_agent.py          # 终端 4: Facility Agent :5006
-python run_web.py                        # 终端 5: Web Server :8100
+python agents/orchestrator_agent.py      # 终端 5: Orchestrator Agent :5007
+python run_web.py                        # 终端 6: Web Server :8100
 ```
 
 ### CLI 交互模式

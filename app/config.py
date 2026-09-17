@@ -40,17 +40,13 @@ class Config:
             "MCP_FACILITY_URL", "http://127.0.0.1:8001/mcp"
         )
 
+        # Orchestrator Agent 地址（Web 网关 / CLI 连接的编排 Agent URL）
+        self.orchestrator_url = os.getenv(
+            "ORCHESTRATOR_URL", "http://127.0.0.1:5007"
+        )
+
         # 日志配置
         self.log_file = os.path.join(_project_dir, 'logs', 'app.log')
-
-        # 意图 → Agent 映射
-        self.intent = {
-            "course": "CourseQueryAssistant",           # 课程查询
-            "campus_event": "FacilityQueryAssistant",    # 校园活动查询
-            "campus_news": "FacilityQueryAssistant",     # 校园新闻查询
-            "canteen": "FacilityQueryAssistant",         # 餐厅查询
-            "library_hours": "FacilityQueryAssistant",   # 图书馆开放时间查询
-        }
 
         self.temperature = 0.1
 

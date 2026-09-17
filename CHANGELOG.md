@@ -4,6 +4,31 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 ---
 
+## [v3.7.0] — 2026-09-17
+
+### 🤖 A2A Orchestrator Agent（多 agent 编排改造）
+
+把「意图识别 + 路由 + 委派 + 聚合」从 Web 网关剥离为独立的 OrchestratorAgent，
+A2A 从「单向单跳」升级为「两级委派 + 并行编排」，真正体现多 agent 交互。
+
+#### 新增（Added）
+- `agents/orchestrator_agent.py` — OrchestratorAgent(:5007)，A2A server + client 双角色
+- 多意图 `asyncio.gather` 并行委派 specialist agent，再聚合为单一回答
+
+#### 变更（Changed）
+- `app/server.py` — 退化为纯 A2A client：删除意图识别/天气/推荐/汇总逻辑，网关不再调 LLM
+- `app/config.py` — 删除 `intent` dict，新增 `ORCHESTRATOR_URL`（默认 `http://127.0.0.1:5007`）
+- `app/cli.py` — 改为委派 OrchestratorAgent，消除与网关重复的路由/汇总逻辑
+- `docker-entrypoint.py` — 新增 Orchestrator Agent(:5007) 启动 + 健康检查（MCP 之后、Web 之前）
+- `docker-compose.yml` — 补注释说明（orchestrator 由 entrypoint 拉起，无新增 service）
+- `README.md` — 架构图、项目结构、端口表、本地启动步骤更新
+
+#### 未改动（Unchanged）
+- `agents/course_agent.py` / `agents/facility_agent.py` 与两个 MCP server 零改动
+- 无数据库迁移、无新增 MCP 服务
+
+---
+
 ## [v3.5.1] — 2026-08-13
 
 ### 🔗 补全全链路 Trace 传播（Agent → MCP → DB）

@@ -19,7 +19,6 @@ from datetime import datetime
 from typing import Optional
 
 import pytz
-import requests
 import mysql.connector
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from fastapi import FastAPI, WebSocket, HTTPException, Request, Response
@@ -28,12 +27,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from starlette.websockets import WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 from python_a2a import AgentNetwork, Message, TextContent, MessageRole, Task
-from langchain_openai import ChatOpenAI
-from app.llm import create_llm
 
 from app.config import Config
 from app.logging import logger
-from app.prompts import SmartCampusPrompts
 from app.memory import MemoryManager
 from app.observability import (
     span, trace, new_trace_id, set_trace_id, get_trace_id,
@@ -107,7 +103,6 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # ============ 全局状态 ============
 agent_network: Optional[AgentNetwork] = None
-llm: Optional[ChatOpenAI] = None
 memory: Optional[MemoryManager] = None  # 持久化分层记忆（替换原 sessions 内存字典）
 
 # Greeting patterns
@@ -121,20 +116,16 @@ GREETING_PATTERNS = [
 # ============ 启动事件 ============
 @app.on_event("startup")
 async def startup():
-    global agent_network, llm, memory
-
-    # 初始化 LLM
-    llm = create_llm()
+    global agent_network, memory
 
     # 初始化持久化分层记忆（替换原 sessions 内存字典）
     memory = MemoryManager(conf)
     await asyncio.to_thread(memory.warmup)  # 预热 embedding，消除冷启动延迟
 
-    # 初始化 AgentNetwork（2个代理）
+    # 初始化 AgentNetwork（网关只连接编排 Agent，不再直连 specialist）
     agent_network = AgentNetwork(name="CUHK Campus Assistant Network")
-    agent_network.add("CourseQueryAssistant", "http://localhost:5005")
-    agent_network.add("FacilityQueryAssistant", "http://localhost:5006")
-    logger.info("AgentNetwork 初始化完成：CourseQueryAssistant + FacilityQueryAssistant")
+    agent_network.add("OrchestratorAgent", conf.orchestrator_url)
+    logger.info("AgentNetwork 初始化完成：OrchestratorAgent")
     logger.info("Web 服务器启动就绪，监听 http://0.0.0.0:8100")
 
     # 后台异步检查数据新鲜度（不阻塞启动）
@@ -272,152 +263,50 @@ async def _consolidate_memory(session_id: str):
     await asyncio.to_thread(_get_memory().consolidate, session_id)
 
 
-# ============ 意图识别 ============
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type((Exception,)),
-    before_sleep=lambda retry_state: logger.warning(
-        f"LLM 意图识别重试 {retry_state.attempt_number}/3..."
-    )
-)
-async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
-    """调用 LLM 进行多意图识别（异步），自动重试最多 3 次"""
-    _llm = llm or create_llm()  # 防御：若 startup 未触发，降级到 create_llm()
-    chain = SmartCampusPrompts.intent_prompt() | _llm
-    current_date = datetime.now(TZ).strftime('%Y-%m-%d')
-    context_lines = conversation_history  # 由 MemoryManager.recall() 统一控制 token 预算，此处不再硬截断
-
-    with span("llm_recognize_intent"):
-        intent_response = (await chain.ainvoke({
-            "conversation_history": context_lines,
-            "query": user_input,
-            "current_date": current_date
-        })).content.strip()
-
-        # 清理 Markdown 代码块
-        intent_response = re.sub(r'^```json\s*|\s*```$', '', intent_response).strip()
-        logger.info(f"意图识别: {intent_response}")
-
-        intent_output = json.loads(intent_response)
-        intents = intent_output.get("intents", [])
-        user_queries = intent_output.get("user_queries", {})
-        follow_up_message = intent_output.get("follow_up_message", "")
-        return intents, user_queries, follow_up_message
-
-
-# ============ 天气 API ============
-async def fetch_weather() -> dict:
-    """调用 Open-Meteo API 获取 CUHK 区域天气"""
-    url = "https://api.open-meteo.com/v1/forecast"
-    params = {
-        "latitude": 22.419,
-        "longitude": 114.207,
-        "current_weather": "true",
-        "daily": "temperature_2m_max,temperature_2m_min,weathercode,precipitation_sum",
-        "timezone": "Asia/Shanghai",
-        "forecast_days": 4
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        logger.info(f"天气 API 返回: 当前温度 {data.get('current_weather', {}).get('temperature', 'N/A')}°C")
-        return {"status": "success", "data": data}
-    except Exception as e:
-        logger.error(f"天气 API 调用失败: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-def format_weather_for_prompt(data: dict) -> str:
-    """将 Open-Meteo 原始 JSON 转为 LLM 友好文本"""
-    if data.get("status") != "success":
-        return f"天气数据获取失败: {data.get('message', '未知错误')}"
-
-    raw = data["data"]
-    current = raw.get("current_weather", {})
-    daily = raw.get("daily", {})
-
-    lines = [
-        f"当前温度: {current.get('temperature', 'N/A')}°C",
-        f"风速: {current.get('windspeed', 'N/A')} km/h",
-        f"天气代码: {current.get('weathercode', 'N/A')}",
-    ]
-
-    if daily:
-        dates = daily.get("time", [])
-        max_temps = daily.get("temperature_2m_max", [])
-        min_temps = daily.get("temperature_2m_min", [])
-        codes = daily.get("weathercode", [])
-        precip = daily.get("precipitation_sum", [])
-
-        for i in range(min(len(dates), 4)):
-            day_label = "今天" if i == 0 else f"第{i}天({dates[i]})"
-            lines.append(
-                f"{day_label}: {min_temps[i] if i < len(min_temps) else '?'}°C ~ "
-                f"{max_temps[i] if i < len(max_temps) else '?'}°C, "
-                f"天气代码 {codes[i] if i < len(codes) else '?'}, "
-                f"降水 {precip[i] if i < len(precip) else '?'}mm"
-            )
-
-    return "\n".join(lines)
-
-
-# ============ A2A Agent 调用 ============
+# ============ A2A Orchestrator 调用 ============
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=1, min=1, max=4),
     retry=retry_if_exception_type((Exception,)),
     before_sleep=lambda retry_state: logger.warning(
-        f"A2A Agent 调用重试 {retry_state.attempt_number}/2..."
+        f"Orchestrator 调用重试 {retry_state.attempt_number}/2..."
     )
 )
-async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> str:
-    """调用 A2A Agent 并返回原始结果文本（自动重试最多 2 次）"""
+async def call_orchestrator(query: str, conversation_history: str) -> str:
+    """把查询发送给 OrchestratorAgent，返回最终回答（自动重试最多 2 次）。
+
+    Orchestrator 负责意图识别、路由委派与结果聚合，网关不再直连
+    CourseQueryAssistant / FacilityQueryAssistant，也不直接处理天气/推荐。
+    """
     start = time.perf_counter()
     status = "error"
     try:
         if agent_network is None:
             raise RuntimeError("AgentNetwork 未初始化（请确保 startup 事件已触发）")
-        agent = agent_network.get_agent(agent_name)
-        chat_history = conversation_history + f'\nUser: {query_str}'  # recall 已控制上下文预算
-        message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
-        # 将 trace_id 注入 A2A 消息，Agent 端可提取用于链路关联
+        agent = agent_network.get_agent("OrchestratorAgent")
+        # 用 JSON payload 同时传递查询与对话历史（Orchestrator 无状态，历史随任务注入）
+        payload = json.dumps(
+            {"query": query, "conversation_history": conversation_history},
+            ensure_ascii=False,
+        )
+        message = Message(content=TextContent(text=payload), role=MessageRole.USER)
         message_dict = message.to_dict()
         message_dict["_trace_id"] = get_trace_id()
         task = Task(id="task-" + str(uuid.uuid4()), message=message_dict)
 
-        with span("a2a_call_agent", {"agent_name": agent_name}):
+        with span("a2a_call_orchestrator", {"agent_name": "OrchestratorAgent"}):
             raw_response = await agent.send_task_async(task)
-            logger.info(f"{agent_name} 响应状态: {raw_response.status.state}")
+            logger.info(f"OrchestratorAgent 响应状态: {raw_response.status.state}")
 
             if raw_response.status.state == 'completed':
                 status = "completed"
                 return raw_response.artifacts[0]['parts'][0]['text']
-            else:
-                status = raw_response.status.state
-                return raw_response.status.message['content']['text']
-    except Exception as e:
-        logger.error(f"A2A Agent '{agent_name}' 调用失败: {e}")
-        status = "error"
-        return f"ERROR: Agent '{agent_name}' 不可达 — {str(e)}"
+            status = raw_response.status.state
+            return raw_response.status.message['content']['text']
     finally:
         elapsed = time.perf_counter() - start
-        a2a_agent_calls_total.labels(agent_name=agent_name, status=status).inc()
-        a2a_agent_call_duration_seconds.labels(agent_name=agent_name).observe(elapsed)
-
-
-async def summarize_response(agent_name: str, query_str: str, agent_result: str) -> str:
-    """用 LLM 总结 Agent 返回的原始数据（异步）"""
-    _llm = llm or create_llm()  # 防御：若 startup 未触发
-    if agent_name == "CourseQueryAssistant":
-        chain = SmartCampusPrompts.summarize_course_prompt() | _llm
-    elif agent_name == "FacilityQueryAssistant":
-        chain = SmartCampusPrompts.summarize_facility_prompt() | _llm
-    else:
-        return agent_result
-
-    return (await chain.ainvoke({"query": query_str, "raw_response": agent_result})).content.strip()
+        a2a_agent_calls_total.labels(agent_name="OrchestratorAgent", status=status).inc()
+        a2a_agent_call_duration_seconds.labels(agent_name="OrchestratorAgent").observe(elapsed)
 
 
 # ============ 核心处理逻辑（生成器版本，用于 WebSocket 流式） ============
@@ -439,63 +328,12 @@ async def process_query_stream(query: str, session_id: str):
         yield greeting, True, None
         return
 
-    # 意图识别
+    # 交给 OrchestratorAgent：意图识别 + 路由委派 + 聚合
     try:
-        intents, user_queries, follow_up_message = await recognize_intent(query, history_text)
+        full_response = await call_orchestrator(query, history_text)
     except Exception as e:
-        logger.error(f"意图识别失败: {e}")
-        error_msg = "抱歉，我暂时无法理解您的问题，请换种方式描述一下？"
-        await asyncio.to_thread(mem.save, session_id, "assistant", error_msg)
-        yield error_msg, True, None
-        return
-
-    # 超出范围
-    if "out_of_scope" in intents:
-        await asyncio.to_thread(mem.save, session_id, "assistant", follow_up_message)
-        yield follow_up_message, True, None
-        return
-
-    # 追问
-    if follow_up_message and not intents:
-        await asyncio.to_thread(mem.save, session_id, "assistant", follow_up_message)
-        yield follow_up_message, True, None
-        return
-
-    # 处理每个意图
-    responses = []
-    for intent in intents:
-        try:
-            if intent == "weather":
-                # 天气：直接调 API
-                weather_data = await fetch_weather()
-                weather_text = format_weather_for_prompt(weather_data)
-                chain = SmartCampusPrompts.summarize_weather_prompt() | (llm or create_llm())
-                final = (await chain.ainvoke({"query": user_queries.get(intent, query), "raw_response": weather_text})).content.strip()
-                responses.append(final)
-
-            elif intent == "recommend":
-                # 推荐：LLM 直接生成
-                chain = SmartCampusPrompts.recommend_prompt() | (llm or create_llm())
-                final = (await chain.ainvoke({"query": user_queries.get(intent, query)})).content.strip()
-                responses.append(final)
-
-            elif intent in conf.intent:
-                # 有 Agent 映射的意图
-                agent_name = conf.intent[intent]
-                query_str = user_queries.get(intent, query)
-                logger.info(f"路由意图 '{intent}' -> {agent_name}，查询: {query_str}")
-
-                agent_result = await call_agent(agent_name, query_str, history_text)
-                final = await summarize_response(agent_name, query_str, agent_result)
-                responses.append(final)
-
-            else:
-                responses.append(f"暂不支持「{intent}」类型的查询。")
-        except Exception as e:
-            logger.error(f"处理意图 '{intent}' 失败: {e}")
-            responses.append(f"查询「{intent}」时出错，请重试。")
-
-    full_response = "\n\n".join(responses) if responses else "抱歉，没有找到相关信息。"
+        logger.error(f"Orchestrator 调用失败: {e}")
+        full_response = "抱歉，校园助手服务暂时不可达，请稍后重试。"
 
     # 记录助手回复
     await asyncio.to_thread(mem.save, session_id, "assistant", full_response)
@@ -627,8 +465,8 @@ async def health_check():
 
     components = {"web_server": "ok"}
 
-    # 检查 A2A Agent 可达性（1.5s 超时）
-    for name, port in [("CourseQueryAssistant", 5005), ("FacilityQueryAssistant", 5006)]:
+    # 检查编排 Agent 可达性（1.5s 超时）
+    for name, port in [("OrchestratorAgent", 5007)]:
         try:
             async with _httpx.AsyncClient() as client:
                 resp = await client.get(

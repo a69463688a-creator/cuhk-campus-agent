@@ -46,6 +46,7 @@ services:
       # MCP 服务地址（Agent → MCP Server 通信）
       MCP_COURSE_URL: http://127.0.0.1:8002/mcp
       MCP_FACILITY_URL: http://127.0.0.1:8001/mcp
+      # Orchestrator Agent 由 docker-entrypoint 拉起（5007），无需独立 service
       # Web
       HOST: "0.0.0.0"
       PORT: "8100"

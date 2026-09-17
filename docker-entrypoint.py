@@ -134,6 +134,11 @@ def main():
     if not wait_for_http("http://127.0.0.1:5006/.well-known/agent-card.json", "Facility Agent", timeout=90):
         cleanup()
 
+    # ── 2.5 Orchestrator Agent（编排：意图识别 + 委派 + 聚合） ──
+    orchestrator = start_service("Orchestrator Agent (5007)", [python, "agents/orchestrator_agent.py"])
+    if not wait_for_http("http://127.0.0.1:5007/.well-known/agent-card.json", "Orchestrator Agent", timeout=90):
+        cleanup()
+
     # ── 3. Web Server (前台) ──
     log("启动 Web Server (8100) ...")
     os.execl(python, python, "run_web.py")  # 替换当前进程
