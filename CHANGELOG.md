@@ -4,6 +4,34 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 ---
 
+## [v3.8.0] — 2026-09-17
+
+### 🚌 校巴交通 Agent + 🗓️ 日程规划 Agent（A2A 差异化扩展）
+
+新增两类差异化 Agent：校巴交通（图搜索规划型）与日程规划（编排规划型），
+进一步体现 A2A 多 agent 交互（并行委派、二级委派、判断）。
+
+#### 新增（Added）
+- `mcp_servers/transport_server.py` — 交通 MCP（:8003）：`query_transport` / `get_transport_schema` / `find_route`
+- `data/transport.py` — `TransportService`：内存构建校巴图 + Dijkstra（站数×1 + 换乘×1000）
+- `agents/transport_agent.py` — TransportQueryAssistant（:5008）：路线规划 / 时刻表
+- `agents/planner_agent.py` — PlannerAgent（:5009）：拆解 → 并行委派 → 冲突判断 → 合成日程（纯编排，无新数据源）
+- `spiders/transport.py` — 校巴路线/站点基线数据（6 条路线）
+- `migrations/versions/004_transport_tables.py` — 新增 `bus_routes` / `bus_stops` 两张表
+- `app/prompts.py` — 新增 3 个规划 prompt + `planning` 意图 + `summarize_transport_prompt`
+
+#### 变更（Changed）
+- `agents/orchestrator_agent.py` — 意图路由新增 `transport` / `planning`
+- `app/config.py` — 新增 `MCP_TRANSPORT_URL`
+- `app/server.py` — `/api/sources` 新增校巴交通 / 日程规划
+- `docker-entrypoint.py` — 新增 Transport MCP/Agent + Planner Agent 启动
+- `docker-compose.yml` — 补 `MCP_TRANSPORT_URL`
+
+#### 未改动（Unchanged）
+- `course` / `facility` 两个 MCP server 与 Agent 零改动
+
+---
+
 ## [v3.7.0] — 2026-09-17
 
 ### 🤖 A2A Orchestrator Agent（多 agent 编排改造）

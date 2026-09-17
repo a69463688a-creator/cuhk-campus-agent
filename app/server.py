@@ -284,6 +284,7 @@ async def call_orchestrator(query: str, conversation_history: str) -> str:
         if agent_network is None:
             raise RuntimeError("AgentNetwork 未初始化（请确保 startup 事件已触发）")
         agent = agent_network.get_agent("OrchestratorAgent")
+        agent.timeout = 180  # 规划链路多级 LLM，默认 30s 会读超时
         # 用 JSON payload 同时传递查询与对话历史（Orchestrator 无状态，历史随任务注入）
         payload = json.dumps(
             {"query": query, "conversation_history": conversation_history},
@@ -381,6 +382,8 @@ async def get_sources():
             {"value": "canteen", "label": "🍽️ 餐厅信息"},
             {"value": "library_hours", "label": "📖 图书馆"},
             {"value": "weather", "label": "🌤️ 天气"},
+            {"value": "transport", "label": "🚌 校巴交通"},
+            {"value": "planning", "label": "🗓️ 日程规划"},
         ]
     }
 

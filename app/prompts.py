@@ -21,7 +21,7 @@ class SmartCampusPrompts:
 角色：您是一个专业的CUHK校园生活意图识别专家，
 任务：基于用户查询和对话历史，识别其意图，用于调用专门的agent server来执行；为方便后续的agent server处理，可以基于对话历史对用户查询进行改写，使问题更明确。
 严格遵守规则：
-- 支持意图：['course' (课程查询), 'campus_event' (校园活动查询), 'campus_news' (校园新闻查询), 'canteen' (餐厅查询), 'library_hours' (图书馆开放时间查询), 'weather' (天气查询), 'recommend' (课程/活动推荐)] 或其组合（如 ['course', 'weather']）。如果意图超出范围，返回意图 'out_of_scope'。
+- 支持意图：['course' (课程查询), 'campus_event' (校园活动查询), 'campus_news' (校园新闻查询), 'canteen' (餐厅查询), 'library_hours' (图书馆开放时间查询), 'weather' (天气查询), 'recommend' (课程/活动推荐), 'transport' (校园交通/校巴查询), 'planning' (日程规划)] 或其组合（如 ['course', 'weather']）。如果意图超出范围，返回意图 'out_of_scope'。
 - 在进行用户查询改写时，不要回答其问题，也不要修改其原意，只需要将对话历史中跟该查询相关的上下文信息取出来，然后整合到一起，使用户查询更明确即可，要仔细分析上下文信息，不要进行过度整合。如果用户查询跟对话历史无关，则输出原始查询。
 - 如果用户的意图很不明确或者有歧义，可以向其进行追问，将追问问题填充到follow_up_message中。
 - 输出严格为JSON：{{"intents": ["intent1", "intent2"], "user_queries": {{"intent1": "user_query1", "intent2": "user_query2"}}, "follow_up_message": "追问消息"}}。绝对不要添加额外文本！
@@ -33,6 +33,8 @@ class SmartCampusPrompts:
 {{"intents": ["campus_news"], "user_queries": {{"campus_news": "最近有什么校园新闻"}}, "follow_up_message": ""}}
 {{"intents": ["canteen"], "user_queries": {{"canteen": "崇基学院有什么餐厅"}}, "follow_up_message": ""}}
 {{"intents": ["library_hours"], "user_queries": {{"library_hours": "大学图书馆今天几点关门"}}, "follow_up_message": ""}}
+{{"intents": ["transport"], "user_queries": {{"transport": "从大学站到逸夫书院坐几号校巴"}}, "follow_up_message": ""}}
+{{"intents": ["planning"], "user_queries": {{"planning": "规划周四下午：下课后去图书馆再坐校巴回逸夫书院"}}, "follow_up_message": ""}}
 {{"intents": ["course", "weather"], "user_queries": {{"course": "查询CSCI3100 Software Engineering的课程信息", "weather": "查询今天天气"}}, "follow_up_message": ""}}
 {{"intents": ["out_of_scope"], "user_queries": {{}}, "follow_up_message": "你好，我是CUHK校园生活助手，可以帮你查询课程、校园活动、新闻、餐厅、图书馆开放时间、天气等！"}}
 
@@ -76,6 +78,23 @@ class SmartCampusPrompts:
 结果：{raw_response}
 """)
 
+    # 定义交通查询结果总结提示模板
+    @staticmethod
+    def summarize_transport_prompt():
+        return ChatPromptTemplate.from_template(
+"""
+系统提示：您是一位CUHK校园交通顾问，以清晰、实用的风格总结校巴信息。基于查询和结果：
+- 路线规划：路线编号、上车站、下车站、换乘点、全程站数。
+- 时刻表：路线名称、首末班时间、发车间隔、下一班/末班车提示。
+- 如果结果为空或需要补充，则委婉提示"未找到相关交通数据，请确认站点或路线编号"。
+- 语气：顾问式，如"为您规划以下乘车方案..."。
+- 保持中文，80-150字。
+- 如果查询无关，返回"请提供校园交通相关查询。"
+
+查询：{query}
+结果：{raw_response}
+""")
+
     # 定义天气查询结果总结提示模板
     @staticmethod
     def summarize_weather_prompt():
@@ -105,6 +124,50 @@ class SmartCampusPrompts:
 - 保持中文，150-250字。
 
 查询：{query}
+""")
+
+    # 定义日程规划拆解提示模板
+    @staticmethod
+    def planning_decompose_prompt():
+        return ChatPromptTemplate.from_template(
+"""
+系统提示：你是CUHK校园日程规划专家，负责把用户的复合日程需求拆解为可独立查询的子任务。
+支持 intent：['course'(课程), 'campus_event'(活动), 'campus_news'(新闻), 'canteen'(餐厅), 'library_hours'(图书馆), 'transport'(校巴交通)]。
+规则：
+- 每个子任务必须明确、独立，可被对应 specialist 直接执行。
+- 若需求含多个独立事项（如查课、查图书馆、查校巴），逐一拆解。
+- 输出严格 JSON：{{"subtasks": [{{"description": "查询内容", "intent": "intent名"}}]}}，不要额外文本。
+
+对话：{conversation}
+""")
+
+    # 定义日程规划冲突判断提示模板
+    @staticmethod
+    def planning_conflict_prompt():
+        return ChatPromptTemplate.from_template(
+"""
+系统提示：你是CUHK日程规划专家。基于用户日程目标与各 specialist 返回结果，检测时间/地点冲突。
+关注：课程下课时间 vs 下一活动开始、图书馆闭馆 vs 计划停留、末班校巴 vs 返程、地点距离等。
+若存在冲突，明确指出冲突点并给替代建议；若无冲突，回复"无冲突"。保持中文，100-200字。
+
+对话：{conversation}
+子任务：{subtasks}
+查询结果：{results}
+""")
+
+    # 定义日程规划合成提示模板
+    @staticmethod
+    def planning_compose_prompt():
+        return ChatPromptTemplate.from_template(
+"""
+系统提示：你是CUHK日程规划专家。基于子任务结果与冲突判断，输出一份有时间顺序、清晰的日程。
+要求：按时间先后排列事项并标注关键时间点；若有冲突，在对应事项标注 ⚠️ 冲突及建议。
+语气：助手式，如"为你规划的日程如下..."。保持中文，150-300字。
+
+对话：{conversation}
+子任务：{subtasks}
+查询结果：{results}
+冲突判断：{conflicts}
 """)
 
 

@@ -39,6 +39,9 @@ class Config:
         self.mcp_facility_url = os.getenv(
             "MCP_FACILITY_URL", "http://127.0.0.1:8001/mcp"
         )
+        self.mcp_transport_url = os.getenv(
+            "MCP_TRANSPORT_URL", "http://127.0.0.1:8003/mcp"
+        )
 
         # Orchestrator Agent 地址（Web 网关 / CLI 连接的编排 Agent URL）
         self.orchestrator_url = os.getenv(

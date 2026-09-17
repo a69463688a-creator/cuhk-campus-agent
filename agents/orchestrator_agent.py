@@ -56,17 +56,23 @@ INTENT_AGENT_MAP = {
     "campus_news": "FacilityQueryAssistant",
     "canteen": "FacilityQueryAssistant",
     "library_hours": "FacilityQueryAssistant",
+    "transport": "TransportQueryAssistant",
+    "planning": "PlannerAgent",
 }
 
 AGENT_URLS = {
     "CourseQueryAssistant": "http://localhost:5005",
     "FacilityQueryAssistant": "http://localhost:5006",
+    "TransportQueryAssistant": "http://localhost:5008",
+    "PlannerAgent": "http://localhost:5009",
 }
 
 # ============ Specialist AgentNetwork（orchestrator 作为 client 委派） ============
 agent_network = AgentNetwork(name="CUHK Campus Specialist Network")
 agent_network.add("CourseQueryAssistant", AGENT_URLS["CourseQueryAssistant"])
 agent_network.add("FacilityQueryAssistant", AGENT_URLS["FacilityQueryAssistant"])
+agent_network.add("TransportQueryAssistant", AGENT_URLS["TransportQueryAssistant"])
+agent_network.add("PlannerAgent", AGENT_URLS["PlannerAgent"])
 
 
 # ============ 意图识别 ============
@@ -173,6 +179,7 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
     status = "error"
     try:
         agent = agent_network.get_agent(agent_name)
+        agent.timeout = 180  # 规划型 Agent 链路过长（多级 LLM），默认 30s 会读超时
         chat_history = conversation_history + f'\nUser: {query_str}'
         message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
         message_dict = message.to_dict()
@@ -200,6 +207,8 @@ async def summarize_response(agent_name: str, query_str: str, agent_result: str)
         chain = SmartCampusPrompts.summarize_course_prompt() | llm
     elif agent_name == "FacilityQueryAssistant":
         chain = SmartCampusPrompts.summarize_facility_prompt() | llm
+    elif agent_name == "TransportQueryAssistant":
+        chain = SmartCampusPrompts.summarize_transport_prompt() | llm
     else:
         return agent_result
 

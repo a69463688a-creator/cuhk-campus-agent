@@ -21,32 +21,45 @@
 │  • 并行委派 + 结果聚合                          │
 │  • 天气直连 / 推荐直调 LLM                       │
 └──────────────────────────────────────────────┘
+    │ A2A Protocol（编排委派：单一意图 → specialist；复合日程 → Planner）
+    ▼
+┌──────────────────────────────────────────────┐
+│      PlannerAgent — 日程规划 Agent (:5009)     │
+│  • 拆解 → 并行委派 → 冲突判断 → 合成日程          │
+│  • 纯编排：无独立数据源，复用下方 3 个 specialist  │
+└──────────────────────────────────────────────┘
     │ A2A Protocol（agent→agent 委派）
     ▼
 ┌──────────────────────────────────────────────┐
-│         Specialist Agent 层（2 个 Agent）       │
+│         Specialist Agent 层（3 个 Agent）       │
 │                                              │
 │  CourseQueryAssistant   :5005                │
 │  └─ 课程查询（课程代码/教师/时间/地点）            │
 │                                              │
 │  FacilityQueryAssistant  :5006               │
 │  └─ 活动/新闻/餐厅/图书馆 4 合 1                │
+│                                              │
+│  TransportQueryAssistant :5008               │
+│  └─ 校巴路线规划 / 时刻表（图搜索 + Dijkstra）    │
 └──────────────────────────────────────────────┘
     │ MCP Protocol (streamable-http)
     ▼
 ┌──────────────────────────────────────────────┐
-│        MCP Server 层（2 个 Server）             │
+│        MCP Server 层（3 个 Server）             │
 │                                              │
-│  Course MCP   :8002  → course_info           │
-│  Facility MCP :8001  → campus_events          │
-│                      → campus_news           │
-│                      → canteen               │
-│                      → library_hours         │
+│  Course MCP    :8002  → course_info          │
+│  Facility MCP  :8001  → campus_events         │
+│                       → campus_news          │
+│                       → canteen              │
+│                       → library_hours        │
+│  Transport MCP :8003  → query_transport      │
+│                       → get_transport_schema │
+│                       → find_route           │
 └──────────────────────────────────────────────┘
     │ mysql-connector-python
     ▼
 ┌──────────────────────────────────────────────┐
-│     MySQL 8.0  (cuhk_campus / 5 张表)          │
+│     MySQL 8.0  (cuhk_campus / 7 张表)          │
 └──────────────────────────────────────────────┘
 ```
 
@@ -58,7 +71,7 @@
 | **Agent 协议** | `python-a2a` v0.5.10 — Google A2A 协议的 Python 实现 |
 | **工具协议** | `mcp` v2.0.0 — `MCPServer` + `streamable-http` 传输 |
 | **Web 框架** | FastAPI + Uvicorn + WebSocket 流式响应 |
-| **数据库** | MySQL 8.0，utf8mb4，5 张业务表 |
+| **数据库** | MySQL 8.0，utf8mb4，7 张业务表 |
 | **爬虫** | requests + BeautifulSoup4 + schedule 定时调度 |
 | **部署** | Docker Compose（MySQL + App 双容器） |
 
@@ -75,15 +88,19 @@ SmartCampus/
 │
 ├── agents/                      # A2A Agent 层
 │   ├── orchestrator_agent.py    # 编排 Agent（:5007）—— 意图识别 + 委派 + 聚合
+│   ├── planner_agent.py         # 日程规划 Agent（:5009）—— 拆解 + 并行委派 + 冲突判断
 │   ├── course_agent.py          # 课程查询 Agent（:5005）
-│   └── facility_agent.py        # 设施查询 Agent（:5006）
+│   ├── facility_agent.py        # 设施查询 Agent（:5006）
+│   └── transport_agent.py       # 校巴交通 Agent（:5008）
 │
 ├── mcp_servers/                 # MCP 工具服务器层
 │   ├── course_server.py         # 课程 MCP（:8002）
-│   └── facility_server.py       # 设施 MCP（:8001）
+│   ├── facility_server.py       # 设施 MCP（:8001）
+│   └── transport_server.py      # 校巴交通 MCP（:8003）
 │
 ├── data/                        # 数据访问层
 │   ├── database.py              # FacilityService — MySQL 封装
+│   ├── transport.py             # TransportService — 校巴图构建 + Dijkstra 路线
 │   └── format.py                # JSON 序列化（DateEncoder）
 │
 ├── spiders/                     # 数据采集爬虫
@@ -91,7 +108,8 @@ SmartCampus/
 │   ├── events.py                # 校园活动（CPR AJAX API）
 │   ├── news.py                  # 校园新闻（CPR 新闻中心）
 │   ├── canteen.py               # 餐厅信息（CUHK 住宿页面）
-│   └── library.py               # 图书馆开放时间（基线数据）
+│   ├── library.py               # 图书馆开放时间（基线数据）
+│   └── transport.py             # 校巴路线/站点（基线数据）
 │
 ├── sql/
 │   └── docker_init.sql          # DDL + 种子数据（Docker 自动导入）
@@ -111,7 +129,7 @@ SmartCampus/
 
 ## 数据库设计
 
-数据库 `cuhk_campus` 包含 5 张表：
+数据库 `cuhk_campus` 包含 7 张表：
 
 | 表名 | 用途 | 数据来源 |
 |------|------|---------|
@@ -120,6 +138,8 @@ SmartCampus/
 | `campus_news` | 新闻标题、来源、类别、发布日期、摘要、URL | 爬虫（CPR 新闻中心） |
 | `canteen` | 餐厅名称、位置、营业时间、电话、类别、状态 | 爬虫（CUHK 住宿页面） |
 | `library_hours` | 图书馆名称、区域、星期、日期、开放/关闭时间 | 内置基线数据（8 个图书馆） |
+| `bus_routes` | 校巴路线编号、名称、起终点、首末班、发车间隔 | 内置基线数据（6 条路线） |
+| `bus_stops` | 校巴站点（路线编号、站序、站名中/英） | 内置基线数据（路线站点序列） |
 
 ## 意图路由
 
@@ -132,6 +152,8 @@ SmartCampus/
 | `campus_news` | 校园新闻查询 | FacilityQueryAssistant |
 | `canteen` | 餐厅信息查询 | FacilityQueryAssistant |
 | `library_hours` | 图书馆开放时间查询 | FacilityQueryAssistant |
+| `transport` | 校巴路线/时刻表查询 | TransportQueryAssistant |
+| `planning` | 复合日程规划 | PlannerAgent |
 | `weather` | 天气查询 | 直连 Open-Meteo API |
 
 ## 服务端口
@@ -140,10 +162,13 @@ SmartCampus/
 |------|------|------|
 | Web 前端 | 8100 | HTTP (FastAPI) |
 | OrchestratorAgent | 5007 | A2A/JSON |
+| PlannerAgent | 5009 | A2A/JSON |
 | CourseQueryAssistant | 5005 | A2A/JSON |
 | FacilityQueryAssistant | 5006 | A2A/JSON |
+| TransportQueryAssistant | 5008 | A2A/JSON |
 | Course MCP | 8002 | MCP (streamable-http) |
 | Facility MCP | 8001 | MCP (streamable-http) |
+| Transport MCP | 8003 | MCP (streamable-http) |
 | MySQL | 3308→3306 | MySQL Protocol |
 
 > 端口 8100/3308 避免与 [PaperRag](https://github.com/a69463688a-creator/) 项目（8080/3307）冲突。
@@ -185,13 +210,16 @@ mysql -u root -p -D cuhk_campus < sql/docker_init.sql
 cp .env.example .env
 # 编辑 .env 填入真实值
 
-# 4. 启动（需 6 个终端窗口）
+# 4. 启动（需 9 个终端窗口）
 python mcp_servers/course_server.py      # 终端 1: Course MCP :8002
 python mcp_servers/facility_server.py    # 终端 2: Facility MCP :8001
-python agents/course_agent.py            # 终端 3: Course Agent :5005
-python agents/facility_agent.py          # 终端 4: Facility Agent :5006
-python agents/orchestrator_agent.py      # 终端 5: Orchestrator Agent :5007
-python run_web.py                        # 终端 6: Web Server :8100
+python mcp_servers/transport_server.py   # 终端 3: Transport MCP :8003
+python agents/course_agent.py            # 终端 4: Course Agent :5005
+python agents/facility_agent.py          # 终端 5: Facility Agent :5006
+python agents/transport_agent.py         # 终端 6: Transport Agent :5008
+python agents/planner_agent.py           # 终端 7: Planner Agent :5009
+python agents/orchestrator_agent.py      # 终端 8: Orchestrator Agent :5007
+python run_web.py                        # 终端 9: Web Server :8100
 ```
 
 ### CLI 交互模式

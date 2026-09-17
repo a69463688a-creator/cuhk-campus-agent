@@ -117,24 +117,35 @@ def main():
         sys.exit(1)
 
     # ── 1. MCP Servers ──
-    mcp_course   = start_service("Course MCP (8002)",   [python, "mcp_servers/course_server.py"])
-    mcp_facility = start_service("Facility MCP (8001)",  [python, "mcp_servers/facility_server.py"])
+    mcp_course    = start_service("Course MCP (8002)",    [python, "mcp_servers/course_server.py"])
+    mcp_facility  = start_service("Facility MCP (8001)",  [python, "mcp_servers/facility_server.py"])
+    mcp_transport = start_service("Transport MCP (8003)", [python, "mcp_servers/transport_server.py"])
 
     if not wait_for_http("http://127.0.0.1:8002/mcp",   "Course MCP"):
         cleanup()
     if not wait_for_http("http://127.0.0.1:8001/mcp",   "Facility MCP"):
         cleanup()
+    if not wait_for_http("http://127.0.0.1:8003/mcp",   "Transport MCP"):
+        cleanup()
 
     # ── 2. A2A Agents ──
-    agent_course   = start_service("Course Agent (5005)",   [python, "agents/course_agent.py"])
-    agent_facility = start_service("Facility Agent (5006)", [python, "agents/facility_agent.py"])
+    agent_course    = start_service("Course Agent (5005)",    [python, "agents/course_agent.py"])
+    agent_facility  = start_service("Facility Agent (5006)",  [python, "agents/facility_agent.py"])
+    agent_transport = start_service("Transport Agent (5008)", [python, "agents/transport_agent.py"])
 
     if not wait_for_http("http://127.0.0.1:5005/.well-known/agent-card.json", "Course Agent", timeout=90):
         cleanup()
     if not wait_for_http("http://127.0.0.1:5006/.well-known/agent-card.json", "Facility Agent", timeout=90):
         cleanup()
+    if not wait_for_http("http://127.0.0.1:5008/.well-known/agent-card.json", "Transport Agent", timeout=90):
+        cleanup()
 
-    # ── 2.5 Orchestrator Agent（编排：意图识别 + 委派 + 聚合） ──
+    # ── 2.5 Planner Agent（日程规划：三级委派） ──
+    planner = start_service("Planner Agent (5009)", [python, "agents/planner_agent.py"])
+    if not wait_for_http("http://127.0.0.1:5009/.well-known/agent-card.json", "Planner Agent", timeout=90):
+        cleanup()
+
+    # ── 2.6 Orchestrator Agent（编排：意图识别 + 委派 + 聚合） ──
     orchestrator = start_service("Orchestrator Agent (5007)", [python, "agents/orchestrator_agent.py"])
     if not wait_for_http("http://127.0.0.1:5007/.well-known/agent-card.json", "Orchestrator Agent", timeout=90):
         cleanup()
