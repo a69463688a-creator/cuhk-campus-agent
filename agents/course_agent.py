@@ -25,6 +25,7 @@ import pytz
 from app.config import Config
 from app.logging import logger
 from app.llm import create_llm
+from app.progress import progress_store, register_progress_endpoint, STAGE_SQL, STAGE_QUERY
 from app.observability import (
     span, set_trace_id, get_trace_id,
     agent_llm_calls_total, agent_llm_duration_seconds,
@@ -183,6 +184,11 @@ class CourseQueryServer(A2AServer):
         self.llm = llm
         self.sql_prompt = sql_prompt
 
+    def setup_routes(self, app):
+        """注册自定义进度端点（在库默认路由之上）。"""
+        super().setup_routes(app)
+        register_progress_endpoint(app, self)
+
     def _get_schema(self) -> str:
         """获取当前表结构文本（带缓存，首次调用时从 MCP 拉取）"""
         try:
@@ -222,6 +228,7 @@ class CourseQueryServer(A2AServer):
         with span("agent_handle_task", {"agent": "CourseQueryAssistant"}):
             try:
                 # 1. 生成 SQL
+                progress_store.record(trace_id, STAGE_SQL, "正在生成课程查询…")
                 llm_start = time.perf_counter()
                 llm_status = "ok"
                 gen_result = self.generate_sql_query(conversation)
@@ -242,6 +249,7 @@ class CourseQueryServer(A2AServer):
                 logger.info(f"生成的SQL查询: {sql_query}")
 
                 # 2. 通过 stateless MCP Client 执行查询 (传递 trace_id)
+                progress_store.record(trace_id, STAGE_QUERY, "正在查询课程数据库…")
                 mcp_start = time.perf_counter()
                 mcp_status = "ok"
                 try:

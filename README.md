@@ -84,6 +84,8 @@ SmartCampus/
 │   ├── cli.py                   # CLI 命令行交互入口
 │   ├── config.py                # 全局配置（.env 驱动）
 │   ├── prompts.py               # LLM Prompt 模板
+│   ├── a2a_types.py             # AgentResult（结果/追问区分）+ 状态文本提取
+│   ├── progress.py              # 阶段级进度（STAGE_* / ProgressStore / 轮询上抛）
 │   └── logging.py               # 日志系统
 │
 ├── agents/                      # A2A Agent 层
@@ -251,8 +253,8 @@ python spiders/course.py --force --once
 |------|------|------|
 | `/` | GET | Web 前端页面 |
 | `/health` | GET | 综合健康检查 |
-| `/api/query` | POST | 非流式查询 `{"query": "..."}` |
-| `/api/stream` | WebSocket | 流式查询 |
+| `/api/query` | POST | 非流式查询 `{"query": "..."}`，响应含 `needs_input`（是否反问） |
+| `/api/stream` | WebSocket | 流式查询，事件：`start` / `progress`（阶段进度）/ `token`（打字）/ `input_required`（反问）/ `end` |
 | `/api/create_session` | POST | 创建会话 |
 | `/api/history/{session_id}` | GET | 获取对话历史 |
 | `/api/sources` | GET | 数据源状态 |

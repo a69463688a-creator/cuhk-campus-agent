@@ -40,6 +40,11 @@ from app.config import Config
 from app.logging import logger
 from app.llm import create_llm
 from app.prompts import SmartCampusPrompts
+from app.a2a_types import AgentResult, status_message_text
+from app.progress import (
+    progress_store, register_progress_endpoint, await_task_with_progress,
+    STAGE_INTENT, STAGE_DELEGATE, STAGE_COMPOSE,
+)
 from app.observability import (
     span, set_trace_id, get_trace_id,
     a2a_agent_calls_total, a2a_agent_call_duration_seconds,
@@ -173,28 +178,41 @@ def format_weather_for_prompt(data: dict) -> str:
         f"Specialist Agent 调用重试 {retry_state.attempt_number}/2..."
     )
 )
-async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> str:
-    """委派 specialist agent 并返回原始结果文本（自动重试最多 2 次）"""
+async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> AgentResult:
+    """委派 specialist agent 并返回结构化结果（区分结果 / 追问，自动重试最多 2 次）"""
     start = time.perf_counter()
     status = "error"
     try:
         agent = agent_network.get_agent(agent_name)
         agent.timeout = 180  # 规划型 Agent 链路过长（多级 LLM），默认 30s 会读超时
+        trace_id = get_trace_id()
         chat_history = conversation_history + f'\nUser: {query_str}'
         message = Message(content=TextContent(text=chat_history), role=MessageRole.USER)
         message_dict = message.to_dict()
-        message_dict["_trace_id"] = get_trace_id()
+        message_dict["_trace_id"] = trace_id
         task = Task(id="task-" + str(uuid.uuid4()), message=message_dict)
 
-        with span("a2a_call_agent", {"agent_name": agent_name}):
-            raw_response = await agent.send_task_async(task)
-            logger.info(f"{agent_name} 响应状态: {raw_response.status.state}")
+        def _on_progress(stage: dict):
+            # specialist/planner 阶段转发到 orchestrator 本进程 progress_store（同一 trace_id）
+            progress_store.record(trace_id, stage.get("stage", ""), f"[{agent_name}] {stage.get('label', '')}")
 
-            if raw_response.status.state == 'completed':
-                status = "completed"
-                return raw_response.artifacts[0]['parts'][0]['text']
-            status = raw_response.status.state
-            return raw_response.status.message['content']['text']
+        with span("a2a_call_agent", {"agent_name": agent_name}):
+            # 后台阻塞等最终结果 + 前台轮询下游进度端点
+            raw_response = await await_task_with_progress(
+                agent.send_task_async(task),
+                AGENT_URLS[agent_name],
+                trace_id,
+                on_progress=_on_progress,
+            )
+            state = str(raw_response.status.state)
+            logger.info(f"{agent_name} 响应状态: {state}")
+            status = state
+
+            if state == 'completed':
+                return AgentResult("completed", raw_response.artifacts[0]['parts'][0]['text'])
+
+            # input-required / failed 等：从 status.message 提取追问或错误文本
+            return AgentResult(state, status_message_text(raw_response.status.message))
     finally:
         elapsed = time.perf_counter() - start
         a2a_agent_calls_total.labels(agent_name=agent_name, status=status).inc()
@@ -237,6 +255,11 @@ class OrchestratorServer(A2AServer):
     def __init__(self):
         super().__init__(agent_card=agent_card)
 
+    def setup_routes(self, app):
+        """注册自定义进度端点（在库默认路由之上）。"""
+        super().setup_routes(app)
+        register_progress_endpoint(app, self)
+
     @staticmethod
     def _parse_payload(text: str) -> tuple:
         """解析调用方注入的 JSON payload: {query, conversation_history}。
@@ -252,52 +275,68 @@ class OrchestratorServer(A2AServer):
                 pass
         return text, ""
 
-    async def _process_one(self, intent: str, user_queries: dict, query: str, history: str) -> str:
-        """处理单个意图，永不抛异常（返回错误文案）。"""
+    async def _process_one(self, intent: str, user_queries: dict, query: str, history: str) -> AgentResult:
+        """处理单个意图，永不抛异常（返回结构化结果，区分结果 / 追问）。"""
         try:
             if intent == "weather":
                 weather_data = await fetch_weather()
                 weather_text = format_weather_for_prompt(weather_data)
                 chain = SmartCampusPrompts.summarize_weather_prompt() | llm
-                return (await chain.ainvoke({
+                text = (await chain.ainvoke({
                     "query": user_queries.get(intent, query), "raw_response": weather_text
                 })).content.strip()
+                return AgentResult("completed", text)
 
             elif intent == "recommend":
                 chain = SmartCampusPrompts.recommend_prompt() | llm
-                return (await chain.ainvoke({"query": user_queries.get(intent, query)})).content.strip()
+                text = (await chain.ainvoke({"query": user_queries.get(intent, query)})).content.strip()
+                return AgentResult("completed", text)
 
             elif intent in INTENT_AGENT_MAP:
                 agent_name = INTENT_AGENT_MAP[intent]
                 query_str = user_queries.get(intent, query)
                 logger.info(f"路由意图 '{intent}' -> {agent_name}，查询: {query_str}")
-                agent_result = await call_agent(agent_name, query_str, history)
-                return await summarize_response(agent_name, query_str, agent_result)
+                result = await call_agent(agent_name, query_str, history)
+                if result.needs_input:
+                    # 追问：不做 summarize，原样上抛，由上层决定追问用户
+                    return result
+                return AgentResult("completed", await summarize_response(agent_name, query_str, result.text))
 
             else:
-                return f"暂不支持「{intent}」类型的查询。"
+                return AgentResult("completed", f"暂不支持「{intent}」类型的查询。")
         except Exception as e:
             logger.error(f"处理意图 '{intent}' 失败: {e}")
-            return f"查询「{intent}」时出错，请重试。"
+            return AgentResult("failed", f"查询「{intent}」时出错，请重试。")
 
-    async def _handle_async(self, query: str, history: str) -> str:
+    async def _handle_async(self, query: str, history: str) -> AgentResult:
         """编排主流程：意图识别 → 并行委派 → 聚合。"""
+        trace_id = get_trace_id()
         with span("orchestrator_handle_task", {"agent": "OrchestratorAgent"}):
+            progress_store.record(trace_id, STAGE_INTENT, "识别用户意图…")
             try:
                 intents, user_queries, follow_up_message = await recognize_intent(query, history)
             except Exception as e:
                 logger.error(f"意图识别失败: {e}")
-                return "抱歉，我暂时无法理解您的问题，请换种方式描述一下？"
+                return AgentResult("completed", "抱歉，我暂时无法理解您的问题，请换种方式描述一下？")
 
             if "out_of_scope" in intents:
-                return follow_up_message
+                return AgentResult("completed", follow_up_message)
             if follow_up_message and not intents:
-                return follow_up_message
+                return AgentResult("completed", follow_up_message)
 
+            progress_store.record(trace_id, STAGE_DELEGATE, "并行委派查询…")
             responses = await asyncio.gather(
                 *[self._process_one(intent, user_queries, query, history) for intent in intents]
             )
-            return "\n\n".join(responses) if responses else "抱歉，没有找到相关信息。"
+            if not responses:
+                return AgentResult("completed", "抱歉，没有找到相关信息。")
+
+            progress_store.record(trace_id, STAGE_COMPOSE, "聚合结果…")
+            # 全部子意图都追问 → 整体作为「追问」上抛（交由用户补充后重跑）
+            if all(r.needs_input for r in responses):
+                return AgentResult("input-required", "\n\n".join(r.text for r in responses))
+
+            return AgentResult("completed", "\n\n".join(r.text for r in responses))
 
     def handle_task(self, task):
         # 从 A2A 消息提取 trace_id，实现跨进程链路关联（与 specialist 对称）
@@ -311,9 +350,16 @@ class OrchestratorServer(A2AServer):
         logger.info(f"编排任务: query={query[:80]}")
 
         try:
-            answer = asyncio.run(self._handle_async(query, history))
-            task.artifacts = [{"parts": [{"type": "text", "text": answer}]}]
-            task.status = TaskStatus(state=TaskState.COMPLETED)
+            result = asyncio.run(self._handle_async(query, history))
+            if result.needs_input:
+                # 追问：以 INPUT_REQUIRED 状态返回，供上游识别并追问用户
+                task.status = TaskStatus(
+                    state=TaskState.INPUT_REQUIRED,
+                    message={"role": "agent", "content": {"text": result.text}},
+                )
+            else:
+                task.artifacts = [{"parts": [{"type": "text", "text": result.text}]}]
+                task.status = TaskStatus(state=TaskState.COMPLETED)
         except Exception as e:
             logger.error(f"编排失败: {e}")
             task.status = TaskStatus(

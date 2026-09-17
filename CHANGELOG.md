@@ -4,6 +4,34 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 ---
 
+## [v3.9.0] — 2026-09-17
+
+### 🔄 A2A 流式中间反馈 + 反问闭环
+
+补齐「下层能反馈、能反问」的能力，把多级 agent 链路从「黑盒等结果」变为
+「边处理边可见、可追问」：阶段级进度逐级上抛 + input-required 反问闭环。
+
+#### 新增（Added）
+- `app/a2a_types.py` — `AgentResult`（区分结果 / 追问，`needs_input` 判定）+ `status_message_text`（TaskStatus.message 多形态提取）
+- `app/progress.py` — 阶段常量 `STAGE_*` + 线程安全 `ProgressStore` + `/progress/<trace_id>` 端点 + `await_task_with_progress`（后台阻塞等结果 + 前台轮询上抛）
+- `test/test_streaming_feedback.py` — 反问语义 / 进度轮询 / 降级 5 项单元测试
+
+#### 变更（Changed）
+- `agents/course_agent.py` / `facility_agent.py` / `transport_agent.py` — 处理过程按阶段上报（生成 SQL / 解析意图 / 执行 MCP 查询），override `setup_routes` 注册进度端点
+- `agents/planner_agent.py` — 四步各设阶段（拆解 / 委派 / 冲突 / 合成）；委派改轮询；子任务 input-required 以「⚠️ 需要补充信息」透传
+- `agents/orchestrator_agent.py` — 意图 / 委派 / 聚合各设阶段；委派改轮询；追问不再过 summarize，逐级上抛
+- `app/server.py` — `call_orchestrator` 改轮询；`process_query_stream` 上抛进度与 `needs_input`；WebSocket 新增 `progress` / `input_required` 事件；REST `/api/query` 返回 `needs_input`
+- `app/cli.py` — input-required 追问以「💡 」前缀展示
+- `static/index.html` — 处理 `progress`（⏳ 阶段提示）与 `input_required`（💡 追问气泡）事件
+
+#### 技术选型
+- 阶段级进度用 **轮询（`/progress/<trace_id>`）而非 SSE**：阶段几秒一变，轮询短连接对 worker 池更友好，容错简单；token 级留后续
+
+#### 未改动（Unchanged）
+- 无数据库迁移、无新增 MCP 服务
+
+---
+
 ## [v3.8.0] — 2026-09-17
 
 ### 🚌 校巴交通 Agent + 🗓️ 日程规划 Agent（A2A 差异化扩展）

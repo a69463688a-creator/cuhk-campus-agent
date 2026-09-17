@@ -23,6 +23,7 @@ import pytz
 from app.config import Config
 from app.logging import logger
 from app.llm import create_llm
+from app.progress import progress_store, register_progress_endpoint, STAGE_INTENT, STAGE_QUERY
 from app.observability import (
     span, set_trace_id, get_trace_id,
     agent_llm_calls_total, agent_llm_duration_seconds,
@@ -191,6 +192,11 @@ class TransportQueryServer(A2AServer):
         self.llm = llm
         self.transport_prompt = transport_prompt
 
+    def setup_routes(self, app):
+        """注册自定义进度端点（在库默认路由之上）。"""
+        super().setup_routes(app)
+        register_progress_endpoint(app, self)
+
     def _get_schema(self) -> str:
         try:
             return _get_table_schema()
@@ -291,6 +297,7 @@ class TransportQueryServer(A2AServer):
 
         with span("agent_handle_task", {"agent": "TransportQueryAssistant"}):
             try:
+                progress_store.record(trace_id, STAGE_INTENT, "正在解析校巴查询意图…")
                 llm_start = time.perf_counter()
                 gen_result = self.generate(conversation)
                 agent_llm_duration_seconds.labels(agent_name="TransportQueryAssistant").observe(
@@ -307,6 +314,7 @@ class TransportQueryServer(A2AServer):
 
                 agent_llm_calls_total.labels(agent_name="TransportQueryAssistant", status=gen_result["status"]).inc()
 
+                progress_store.record(trace_id, STAGE_QUERY, "正在查询校巴路线/班次…")
                 mcp_start = time.perf_counter()
                 mcp_status = "ok"
                 try:

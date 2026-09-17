@@ -576,7 +576,11 @@
                     const bubble = msgEl.querySelector('.bubble');
                     await streamResponse(query, bubble);
                 } else {
-                    addMessage('system', data.answer);
+                    if (data.needs_input) {
+                        addMessage('system', '💡 ' + data.answer);
+                    } else {
+                        addMessage('system', data.answer);
+                    }
                 }
 
                 await loadHistory();
@@ -631,6 +635,16 @@
                     if (d.type === 'token') {
                         accumulated += d.token;
                         bubble.innerHTML = marked.parse(accumulated);
+                        $messages.scrollTop = $messages.scrollHeight;
+                    } else if (d.type === 'progress') {
+                        // 阶段进度提示（在首 token 到来前显示，随后被正文覆盖）
+                        const label = (d.stage && d.stage.label) || (d.stage && d.stage.stage) || '处理中…';
+                        bubble.innerHTML = marked.parse(accumulated) +
+                            `<div style="color:var(--text-secondary,#888);font-size:13px;margin:4px 0;">⏳ ${label}</div>`;
+                        $messages.scrollTop = $messages.scrollHeight;
+                    } else if (d.type === 'input_required') {
+                        accumulated = d.message || '';
+                        bubble.innerHTML = marked.parse('💡 ' + accumulated);
                         $messages.scrollTop = $messages.scrollHeight;
                     } else if (d.type === 'end') {
                         socket.close();

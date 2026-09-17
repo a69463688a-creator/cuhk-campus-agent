@@ -29,6 +29,8 @@ from pydantic import BaseModel, Field, field_validator
 from python_a2a import AgentNetwork, Message, TextContent, MessageRole, Task
 
 from app.config import Config
+from app.a2a_types import AgentResult, status_message_text
+from app.progress import await_task_with_progress
 from app.logging import logger
 from app.memory import MemoryManager
 from app.observability import (
@@ -272,11 +274,13 @@ async def _consolidate_memory(session_id: str):
         f"Orchestrator 调用重试 {retry_state.attempt_number}/2..."
     )
 )
-async def call_orchestrator(query: str, conversation_history: str) -> str:
-    """把查询发送给 OrchestratorAgent，返回最终回答（自动重试最多 2 次）。
+async def call_orchestrator(query: str, conversation_history: str, on_progress=None) -> AgentResult:
+    """把查询发送给 OrchestratorAgent，返回结构化结果（区分结果 / 追问，自动重试最多 2 次）。
 
     Orchestrator 负责意图识别、路由委派与结果聚合，网关不再直连
     CourseQueryAssistant / FacilityQueryAssistant，也不直接处理天气/推荐。
+
+    on_progress: 可选回调，逐条接收 orchestrator 上报的阶段（dict：stage/label/ts）。
     """
     start = time.perf_counter()
     status = "error"
@@ -290,20 +294,27 @@ async def call_orchestrator(query: str, conversation_history: str) -> str:
             {"query": query, "conversation_history": conversation_history},
             ensure_ascii=False,
         )
+        trace_id = get_trace_id()
         message = Message(content=TextContent(text=payload), role=MessageRole.USER)
         message_dict = message.to_dict()
-        message_dict["_trace_id"] = get_trace_id()
+        message_dict["_trace_id"] = trace_id
         task = Task(id="task-" + str(uuid.uuid4()), message=message_dict)
 
         with span("a2a_call_orchestrator", {"agent_name": "OrchestratorAgent"}):
-            raw_response = await agent.send_task_async(task)
-            logger.info(f"OrchestratorAgent 响应状态: {raw_response.status.state}")
+            # 后台阻塞等最终结果 + 前台轮询 orchestrator 进度端点
+            raw_response = await await_task_with_progress(
+                agent.send_task_async(task),
+                conf.orchestrator_url,
+                trace_id,
+                on_progress=on_progress,
+            )
+            state = str(raw_response.status.state)
+            logger.info(f"OrchestratorAgent 响应状态: {state}")
+            status = state
 
-            if raw_response.status.state == 'completed':
-                status = "completed"
-                return raw_response.artifacts[0]['parts'][0]['text']
-            status = raw_response.status.state
-            return raw_response.status.message['content']['text']
+            if state == 'completed':
+                return AgentResult("completed", raw_response.artifacts[0]['parts'][0]['text'])
+            return AgentResult(state, status_message_text(raw_response.status.message))
     finally:
         elapsed = time.perf_counter() - start
         a2a_agent_calls_total.labels(agent_name="OrchestratorAgent", status=status).inc()
@@ -329,16 +340,34 @@ async def process_query_stream(query: str, session_id: str):
         yield greeting, True, None
         return
 
-    # 交给 OrchestratorAgent：意图识别 + 路由委派 + 聚合
+    # 交给 OrchestratorAgent：后台等最终结果 + 前台轮询进度（经 queue 实时上抛）
+    progress_queue: asyncio.Queue = asyncio.Queue()
+
+    def _on_progress(stage: dict):
+        progress_queue.put_nowait(stage)
+
+    orch_task = asyncio.create_task(
+        call_orchestrator(query, history_text, on_progress=_on_progress)
+    )
+
+    stages = []
+    while not orch_task.done():
+        try:
+            stage = progress_queue.get_nowait()
+            stages.append(stage)
+            yield "", False, {"progress": stage}
+        except asyncio.QueueEmpty:
+            await asyncio.sleep(0.2)
+
     try:
-        full_response = await call_orchestrator(query, history_text)
+        result = await orch_task
     except Exception as e:
         logger.error(f"Orchestrator 调用失败: {e}")
-        full_response = "抱歉，校园助手服务暂时不可达，请稍后重试。"
+        result = AgentResult("failed", "抱歉，校园助手服务暂时不可达，请稍后重试。")
 
     # 记录助手回复
-    await asyncio.to_thread(mem.save, session_id, "assistant", full_response)
-    yield full_response, True, None
+    await asyncio.to_thread(mem.save, session_id, "assistant", result.text)
+    yield result.text, True, {"needs_input": result.needs_input, "stages": stages}
 
 
 # ============ API 路由 ============
@@ -395,12 +424,18 @@ async def query_api(request: QueryRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
     full_response = ""
-    async for token, is_complete, _ in process_query_stream(request.query, session_id):
-        full_response = token
+    needs_input = False
+    async for token, is_complete, meta in process_query_stream(request.query, session_id):
+        # 只取最终回答（跳过阶段进度 yield）
+        if is_complete:
+            full_response = token
+            if meta and meta.get("needs_input"):
+                needs_input = True
 
     return {
         "answer": full_response,
         "is_streaming": False,
+        "needs_input": needs_input,
         "session_id": session_id,
         "processing_time": round(time.time() - start_time, 3)
     }
@@ -428,20 +463,39 @@ async def stream_api(websocket: WebSocket):
 
             # 流式处理（带 trace span）
             accumulated = ""
+            needs_input = False
             with span("websocket_query", {"query": query[:100]}):
-                async for token, is_complete, _ in process_query_stream(query, session_id):
-                    # 逐字符流式输出（模拟打字效果）
-                    new_chars = token[len(accumulated):]
-                    for char in new_chars:
-                        await websocket.send_json({"type": "token", "token": char, "session_id": session_id})
-                        await asyncio.sleep(0.02)  # 打字速度
-                    accumulated += new_chars
+                async for token, is_complete, meta in process_query_stream(query, session_id):
+                    if meta and meta.get("progress"):
+                        # 阶段进度事件
+                        await websocket.send_json({
+                            "type": "progress",
+                            "stage": meta["progress"],
+                            "session_id": session_id,
+                        })
+                    elif meta and meta.get("needs_input"):
+                        # 追问：直接上抛 input_required 事件（不逐字符打字）
+                        needs_input = True
+                        accumulated = token
+                        await websocket.send_json({
+                            "type": "input_required",
+                            "message": token,
+                            "session_id": session_id,
+                        })
+                    else:
+                        # 逐字符流式输出（模拟打字效果）
+                        new_chars = token[len(accumulated):]
+                        for char in new_chars:
+                            await websocket.send_json({"type": "token", "token": char, "session_id": session_id})
+                            await asyncio.sleep(0.02)  # 打字速度
+                        accumulated += new_chars
 
             # 发送结束信号
             await websocket.send_json({
                 "type": "end",
                 "session_id": session_id,
                 "is_complete": True,
+                "needs_input": needs_input,
                 "processing_time": round(time.time() - start_time, 3)
             })
 

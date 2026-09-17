@@ -15,6 +15,7 @@ import uuid
 from python_a2a import AgentNetwork, TextContent, Message, MessageRole, Task
 
 from app.config import Config
+from app.a2a_types import status_message_text
 from app.logging import logger
 
 conf = Config()
@@ -43,9 +44,13 @@ def call_orchestrator(query: str, history: str) -> str:
     task = Task(id="task-" + str(uuid.uuid4()), message=message.to_dict())
 
     raw_response = asyncio.run(agent.send_task_async(task))
-    if raw_response.status.state == 'completed':
+    state = str(raw_response.status.state)
+    if state == 'completed':
         return raw_response.artifacts[0]['parts'][0]['text']
-    return raw_response.status.message['content']['text']
+    text = status_message_text(raw_response.status.message)
+    if state == 'input-required':
+        return f"💡 {text}"  # 追问：提示用户补充信息后重跑
+    return text
 
 
 def process_user_input(prompt):
