@@ -27,6 +27,10 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 - `docker-entrypoint.py` — 新增 Transport MCP/Agent + Planner Agent 启动
 - `docker-compose.yml` — 补 `MCP_TRANSPORT_URL`
 
+#### 修复（Fixed）
+- `data/transport.py` — 换乘段上车站丢失（`n_stops=0`），换乘站现同时作为前段下车站与后段上车站
+- A2A 客户端默认 30s 读超时过短 → 委派处 `agent.timeout=180`（`orchestrator_agent.py` / `planner_agent.py` / `server.py`）
+
 #### 未改动（Unchanged）
 - `course` / `facility` 两个 MCP server 与 Agent 零改动
 
