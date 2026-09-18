@@ -134,11 +134,14 @@ class MemoryManager:
 
     def _ensure_connection(self):
         try:
-            if self.conn is None or not self.conn.is_connected():
-                logger.warning("[Memory] MySQL 连接已断开，正在重连...")
+            if self.conn is None:
                 self._connect()
+                return
+            # ping(reconnect=True) 在连接失效时自动静默重连，避免 is_connected()
+            # 返回缓存态导致的「假在线」或频繁告警，减少召回路径上的重连延迟。
+            self.conn.ping(reconnect=True, attempts=1, delay=0)
         except Exception:
-            logger.warning("[Memory] MySQL 连接检查失败，正在重连...")
+            logger.warning("[Memory] MySQL 连接不可用，重连...")
             self._connect()
 
     # ============ 对外核心接口 ============
@@ -445,23 +448,39 @@ class MemoryManager:
 
     # ============ 混合检索（向量 + 关键词，RRF 融合） ============
     def _semantic_recall(self, query: str, top_k: int) -> list[str]:
-        vec_hits = []
+        # 快速路径：先取有 embedding 的长期记忆，为空则跳过 embed 调用。
+        # 新会话（无长期记忆）下省去 ~2.5s 的 embedding 往返，只走关键词检索。
+        memories = []
         try:
-            q_vec = self.embedder.embed_one(query)
-            vec_hits = self._cosine_topk(q_vec, top_k)
+            memories = self._load_all_memories_with_embedding()
         except Exception as e:
-            logger.warning(f"[Memory] 向量召回失败，降级关键词: {e}")
+            logger.warning(f"[Memory] 加载长期记忆失败，跳过向量召回: {e}")
+
+        vec_hits = []
+        if memories:
+            try:
+                q_vec = self.embedder.embed_one(query)
+                vec_hits = self._cosine_topk(q_vec, top_k, memories)
+            except Exception as e:
+                logger.warning(f"[Memory] 向量召回失败，降级关键词: {e}")
 
         kw_hits = self._keyword_search(query, top_k)
         return self._rrf_fuse(vec_hits, kw_hits, top_k)
 
-    def _cosine_topk(self, q_vec: list[float], top_k: int) -> list[tuple[int, str, float]]:
+    def _cosine_topk(
+        self,
+        q_vec: list[float],
+        top_k: int,
+        memories: list[dict] | None = None,
+    ) -> list[tuple[int, str, float]]:
         q = np.asarray(q_vec, dtype=np.float32)
         qn = np.linalg.norm(q)
         if qn == 0:
             return []
+        if memories is None:
+            memories = self._load_all_memories_with_embedding()
         scored = []
-        for row in self._load_all_memories_with_embedding():
+        for row in memories:
             try:
                 e = np.frombuffer(row["embedding"], dtype=np.float32)
             except Exception:

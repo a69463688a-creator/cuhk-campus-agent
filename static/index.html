@@ -553,60 +553,45 @@
 
             addTypingIndicator();
 
+            let msgEl = null;
+            let bubble = null;
             try {
-                // 先用非流式 API 获取完整响应
-                const res = await fetch(`${API_BASE}/api/query`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        query,
-                        source_filter: $sourceFilter.value || null,
-                        session_id: currentSessionId
-                    })
-                });
-                const data = await res.json();
-                removeTypingIndicator();
-
-                if (data.is_streaming) {
-                    // 如果后端标记需要流式，使用 WebSocket
-                    const msgEl = document.createElement('div');
-                    msgEl.className = 'message system';
-                    msgEl.innerHTML = '<span class="label">CUHK助手</span><div class="bubble"></div>';
-                    $messages.appendChild(msgEl);
-                    const bubble = msgEl.querySelector('.bubble');
-                    await streamResponse(query, bubble);
-                } else {
-                    if (data.needs_input) {
-                        addMessage('system', '💡 ' + data.answer);
-                    } else {
-                        addMessage('system', data.answer);
-                    }
-                }
-
+                // 直接用 WebSocket 流式：token / 阶段进度 / 追问逐条实时渲染
+                msgEl = document.createElement('div');
+                msgEl.className = 'message system';
+                msgEl.innerHTML = '<span class="label">CUHK助手</span><div class="bubble"></div>';
+                $messages.appendChild(msgEl);
+                bubble = msgEl.querySelector('.bubble');
+                await streamResponse(query, bubble);
                 await loadHistory();
             } catch (e) {
                 removeTypingIndicator();
-                const msgEl = addMessage('system',
-                    `❌ ${e.message.includes('Failed to fetch') || e.message.includes('NetworkError')
-                        ? '网络连接失败，请检查服务是否启动'
-                        : `发生错误: ${e.message}`}`);
+                // 流式气泡为空则移除，避免残留空白助手消息
+                if (msgEl && bubble && !bubble.innerHTML.trim()) {
+                    msgEl.remove();
+                }
+                const netErr = e && e.message && (
+                    e.message.includes('Failed to fetch') ||
+                    e.message.includes('NetworkError') ||
+                    e.message.includes('WebSocket')
+                );
+                const errEl = addMessage('system',
+                    `❌ ${netErr ? '网络连接失败，请检查服务是否启动' : `发生错误: ${e.message}`}`);
                 // 添加重试按钮到气泡中
-                if (msgEl) {
-                    const bubble = msgEl.querySelector('.bubble');
-                    if (bubble) {
-                        const retryBtn = document.createElement('button');
-                        retryBtn.textContent = '🔄 点击重试';
-                        retryBtn.style.cssText = 'margin-top:10px;padding:6px 16px;border:1px solid var(--primary);' +
-                            'border-radius:6px;background:var(--primary-bg);color:var(--primary);cursor:pointer;font-size:13px;transition:all .2s;';
-                        retryBtn.onmouseenter = () => { retryBtn.style.background = 'var(--primary)'; retryBtn.style.color = '#fff'; };
-                        retryBtn.onmouseleave = () => { retryBtn.style.background = 'var(--primary-bg)'; retryBtn.style.color = 'var(--primary)'; };
-                        retryBtn.onclick = () => {
-                            msgEl.remove();
-                            $input.value = query;
-                            sendMessage();
-                        };
-                        bubble.appendChild(retryBtn);
-                    }
+                const eb = errEl && errEl.querySelector('.bubble');
+                if (eb) {
+                    const retryBtn = document.createElement('button');
+                    retryBtn.textContent = '🔄 点击重试';
+                    retryBtn.style.cssText = 'margin-top:10px;padding:6px 16px;border:1px solid var(--primary);' +
+                        'border-radius:6px;background:var(--primary-bg);color:var(--primary);cursor:pointer;font-size:13px;transition:all .2s;';
+                    retryBtn.onmouseenter = () => { retryBtn.style.background = 'var(--primary)'; retryBtn.style.color = '#fff'; };
+                    retryBtn.onmouseleave = () => { retryBtn.style.background = 'var(--primary-bg)'; retryBtn.style.color = 'var(--primary)'; };
+                    retryBtn.onclick = () => {
+                        errEl.remove();
+                        $input.value = query;
+                        sendMessage();
+                    };
+                    eb.appendChild(retryBtn);
                 }
             } finally {
                 isResponseInProgress = false;
@@ -621,6 +606,13 @@
                 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
                 socket = new WebSocket(`${wsProtocol}//${location.host}${API_BASE}/api/stream`);
                 let accumulated = '';
+                let settled = false;
+
+                const settle = (err) => {
+                    if (settled) return;
+                    settled = true;
+                    err ? reject(err) : resolve();
+                };
 
                 socket.onopen = () => {
                     socket.send(JSON.stringify({
@@ -633,35 +625,34 @@
                 socket.onmessage = e => {
                     const d = JSON.parse(e.data);
                     if (d.type === 'token') {
+                        removeTypingIndicator();
                         accumulated += d.token;
                         bubble.innerHTML = marked.parse(accumulated);
                         $messages.scrollTop = $messages.scrollHeight;
                     } else if (d.type === 'progress') {
                         // 阶段进度提示（在首 token 到来前显示，随后被正文覆盖）
+                        removeTypingIndicator();
                         const label = (d.stage && d.stage.label) || (d.stage && d.stage.stage) || '处理中…';
                         bubble.innerHTML = marked.parse(accumulated) +
                             `<div style="color:var(--text-secondary,#888);font-size:13px;margin:4px 0;">⏳ ${label}</div>`;
                         $messages.scrollTop = $messages.scrollHeight;
                     } else if (d.type === 'input_required') {
+                        removeTypingIndicator();
                         accumulated = d.message || '';
                         bubble.innerHTML = marked.parse('💡 ' + accumulated);
                         $messages.scrollTop = $messages.scrollHeight;
                     } else if (d.type === 'end') {
+                        removeTypingIndicator();
                         socket.close();
-                        resolve();
+                        settle();
                     } else if (d.type === 'error') {
-                        bubble.innerHTML += `<p style="color:#ef4444;">[错误: ${d.error}]</p>`;
-                        socket.close();
-                        reject(new Error(d.error));
+                        removeTypingIndicator();
+                        settle(new Error(d.error));
                     }
                 };
 
-                socket.onerror = () => {
-                    bubble.innerHTML += '<p style="color:#ef4444;">[连接错误，请稍后重试]</p>' +
-                        '<button onclick="location.reload()" style="margin-top:8px;padding:6px 16px;border:1px solid var(--primary);border-radius:6px;background:var(--primary-bg);color:var(--primary);cursor:pointer;font-size:13px;">🔄 刷新页面</button>';
-                    reject(new Error('WebSocket connection error'));
-                };
-                socket.onclose = () => resolve();
+                socket.onerror = () => settle(new Error('WebSocket connection error'));
+                socket.onclose = () => settle();
             });
         }
     </script>

@@ -13,6 +13,7 @@ v3.4 Tier 1 升级:
 """
 import json
 import asyncio
+import functools
 import time
 
 from mcp import Client
@@ -182,6 +183,17 @@ SELECT id, library_name, area, day_of_week, date, open_time, close_time, is_clos
 )
 
 
+@functools.lru_cache(maxsize=256)
+def _sql_llm_raw(schema_text: str, conversation: str, current_date: str) -> str:
+    """SQL 生成 LLM 原始输出（进程内 LRU 缓存，命中则不再调 LLM）。"""
+    chain = sql_prompt | llm
+    return chain.invoke({
+        "conversation": conversation,
+        "current_date": current_date,
+        "table_schema_string": schema_text,
+    }).content.strip()
+
+
 # ============ MCP 工具调用 ============
 def _call_mcp_sync(tool_name: str, args: dict) -> str:
     """同步封装：通过 stateless MCP Client 调用工具
@@ -240,13 +252,8 @@ class FacilityQueryServer(A2AServer):
     def generate_sql_query(self, conversation: str) -> dict:
         try:
             schema = self._get_schema()
-            chain = self.sql_prompt | self.llm
             current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
-            output = chain.invoke({
-                "conversation": conversation,
-                "current_date": current_date,
-                "table_schema_string": schema,
-            }).content.strip()
+            output = _sql_llm_raw(schema, conversation, current_date)
             logger.info(f"原始 LLM 输出: {output}")
 
             # 解析两行输出: 第一行是 type JSON, 第二行是 SQL

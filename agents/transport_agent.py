@@ -12,6 +12,8 @@
 """
 import json
 import asyncio
+import functools
+import re
 import time
 
 from mcp import Client
@@ -152,6 +154,43 @@ SELECT route_code, route_name, start_stop, end_stop, service_type, first_bus_tim
 )
 
 
+_ROUTE_CODE_RE = re.compile(r'(?<![A-Za-z0-9])([A-Z0-9]{1,3}号?线)')
+_TIMETABLE_KW = re.compile(r'班次|末班|首班|下一班|几点|发车|时刻|频率')
+_ROUTE_PLANNING_KW = re.compile(r'从|怎么去|坐几号')
+
+
+def _extract_timetable_route_code(conversation: str) -> str | None:
+    """仅当明确为时刻表查询（单一路线号 + 班次关键词、且非路线规划）时返回路线号 token。"""
+    if _ROUTE_PLANNING_KW.search(conversation):
+        return None
+    if not _TIMETABLE_KW.search(conversation):
+        return None
+    tokens = sorted(set(_ROUTE_CODE_RE.findall(conversation)))
+    return tokens[0] if len(tokens) == 1 else None
+
+
+@functools.lru_cache(maxsize=256)
+def _transport_llm_by_code(schema_text: str, route_token: str, current_date: str) -> str:
+    """按路线号生成时刻表 SQL（确定性，进程内缓存）。键=路线号 token，跨表述复用。"""
+    chain = transport_prompt | llm
+    return chain.invoke({
+        "conversation": f"user: {route_token}下一班几点",
+        "current_date": current_date,
+        "table_schema_string": schema_text,
+    }).content.strip()
+
+
+@functools.lru_cache(maxsize=256)
+def _transport_llm_raw(schema_text: str, conversation: str, current_date: str) -> str:
+    """无法归一化（路线规划 / 无路线号）时的完整对话意图解析（命中率低，但保证正确）。"""
+    chain = transport_prompt | llm
+    return chain.invoke({
+        "conversation": conversation,
+        "current_date": current_date,
+        "table_schema_string": schema_text,
+    }).content.strip()
+
+
 # ============ MCP 工具调用 ============
 def _call_mcp_sync(tool_name: str, args: dict) -> str:
     """同步封装：通过 stateless MCP Client 调用工具，经 _meta 传递 trace_id"""
@@ -208,13 +247,12 @@ class TransportQueryServer(A2AServer):
         """LLM 解析意图：route / timetable(+SQL) / input_required"""
         try:
             schema = self._get_schema()
-            chain = self.transport_prompt | self.llm
             current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
-            output = chain.invoke({
-                "conversation": conversation,
-                "current_date": current_date,
-                "table_schema_string": schema,
-            }).content.strip()
+            route_token = _extract_timetable_route_code(conversation)
+            output = (
+                _transport_llm_by_code(schema, route_token, current_date)
+                if route_token else _transport_llm_raw(schema, conversation, current_date)
+            )
             logger.info(f"原始 LLM 输出: {output}")
 
             lines = output.split('\n')

@@ -71,6 +71,24 @@ def test_progress_store_records_in_order():
     assert store.get("") == []
 
 
+def test_progress_store_accumulates_output():
+    """output 累积：append_output 追加 + get_output 读取 + clear 清理。"""
+    store = ProgressStore()
+    store.append_output("t1", "为你")
+    store.append_output("t1", "规划")
+    store.append_output("t1", "的日程")
+    assert store.get_output("t1") == "为你规划的日程"
+
+    # 空 trace_id / 空文本忽略
+    store.append_output("", "x")
+    store.append_output("t1", "")
+    assert store.get_output("") == ""
+    assert store.get_output("t1") == "为你规划的日程"
+
+    store.clear("t1")
+    assert store.get_output("t1") == ""
+
+
 # ============ 阶段进度：轮询上抛（按序、无重复、降级不阻塞） ============
 def test_await_task_with_progress_forwards_new_stages(monkeypatch):
     stages = [
@@ -82,7 +100,7 @@ def test_await_task_with_progress_forwards_new_stages(monkeypatch):
 
     async def fake_fetch(base_url, trace_id):
         calls["n"] += 1
-        return stages[: min(calls["n"], len(stages))]
+        return stages[: min(calls["n"], len(stages))], ""
 
     monkeypatch.setattr(progress_mod, "fetch_progress", fake_fetch)
 
@@ -100,10 +118,35 @@ def test_await_task_with_progress_forwards_new_stages(monkeypatch):
     assert received == stages  # 按序、无重复
 
 
+def test_await_task_with_progress_forwards_output_deltas(monkeypatch):
+    """输出流按增量（非全量）回调 on_output，且不重复。"""
+    outputs = ["为你", "为你规划", "为你规划日程"]
+    calls = {"n": 0}
+
+    async def fake_fetch(base_url, trace_id):
+        calls["n"] += 1
+        return [], outputs[min(calls["n"], len(outputs)) - 1]
+
+    monkeypatch.setattr(progress_mod, "fetch_progress", fake_fetch)
+
+    async def fake_send():
+        await asyncio.sleep(0.06)
+        return "DONE"
+
+    received = []
+    result = asyncio.run(await_task_with_progress(
+        fake_send(), "http://localhost", "t1",
+        on_output=received.append, poll_interval=0.005,
+    ))
+
+    assert result == "DONE"
+    assert "".join(received) == "为你规划日程"  # 增量拼接 == 最终全文
+
+
 def test_await_task_with_progress_degrades_when_no_progress(monkeypatch):
     """无进度能力（端点不可达/返回空）时静默降级，等价于一次性等最终结果。"""
     async def fake_fetch(base_url, trace_id):
-        return []  # 永远无进度
+        return [], ""  # 永远无进度、无输出
 
     monkeypatch.setattr(progress_mod, "fetch_progress", fake_fetch)
 

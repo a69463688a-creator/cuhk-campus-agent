@@ -13,6 +13,8 @@ v3.4 Tier 1 升级:
 """
 import json
 import asyncio
+import functools
+import re
 import time
 
 from mcp import Client
@@ -142,6 +144,37 @@ course_info表结构：{table_schema_string}
 )
 
 
+_COURSE_CODE_RE = re.compile(r'(?<![A-Za-z0-9])([A-Z]{2,5}\d{4})(?!\d)')
+
+
+def _extract_course_code(conversation: str) -> str | None:
+    """从对话中提取单一课程代码（如 CSCI2100）作为缓存键；多个/无代码时返回 None。"""
+    codes = sorted(set(_COURSE_CODE_RE.findall(conversation)))
+    return codes[0] if len(codes) == 1 else None
+
+
+@functools.lru_cache(maxsize=256)
+def _sql_llm_by_code(schema_text: str, code: str, current_date: str) -> str:
+    """按课程代码生成 SQL（确定性，进程内缓存）。键=code，跨表述复用。"""
+    chain = sql_prompt | llm
+    return chain.invoke({
+        "conversation": f"user: {code}",
+        "current_date": current_date,
+        "table_schema_string": schema_text,
+    }).content.strip()
+
+
+@functools.lru_cache(maxsize=256)
+def _sql_llm_raw(schema_text: str, conversation: str, current_date: str) -> str:
+    """无法归一化（无/多课程代码）时的完整对话 SQL 生成（命中率低，但保证正确）。"""
+    chain = sql_prompt | llm
+    return chain.invoke({
+        "conversation": conversation,
+        "current_date": current_date,
+        "table_schema_string": schema_text,
+    }).content.strip()
+
+
 # ============ MCP 工具调用 ============
 def _call_mcp_sync(tool_name: str, args: dict) -> str:
     """同步封装：通过 stateless MCP Client 调用工具
@@ -200,13 +233,12 @@ class CourseQueryServer(A2AServer):
     def generate_sql_query(self, conversation: str) -> dict:
         try:
             schema = self._get_schema()
-            chain = self.sql_prompt | self.llm
             current_date = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')
-            output = chain.invoke({
-                "conversation": conversation,
-                "current_date": current_date,
-                "table_schema_string": schema,
-            }).content.strip()
+            code = _extract_course_code(conversation)
+            output = (
+                _sql_llm_by_code(schema, code, current_date)
+                if code else _sql_llm_raw(schema, conversation, current_date)
+            )
             logger.info(f"原始 LLM 输出: {output}")
             if output.startswith('{'):
                 return json.loads(output)

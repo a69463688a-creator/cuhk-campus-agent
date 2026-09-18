@@ -20,7 +20,7 @@ from typing import Optional
 
 import pytz
 import mysql.connector
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 from fastapi import FastAPI, WebSocket, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -268,19 +268,20 @@ async def _consolidate_memory(session_id: str):
 # ============ A2A Orchestrator 调用 ============
 @retry(
     stop=stop_after_attempt(2),
-    wait=wait_exponential(multiplier=1, min=1, max=4),
+    wait=wait_fixed(0.5),
     retry=retry_if_exception_type((Exception,)),
     before_sleep=lambda retry_state: logger.warning(
         f"Orchestrator 调用重试 {retry_state.attempt_number}/2..."
     )
 )
-async def call_orchestrator(query: str, conversation_history: str, on_progress=None) -> AgentResult:
+async def call_orchestrator(query: str, conversation_history: str, on_progress=None, on_output=None) -> AgentResult:
     """把查询发送给 OrchestratorAgent，返回结构化结果（区分结果 / 追问，自动重试最多 2 次）。
 
     Orchestrator 负责意图识别、路由委派与结果聚合，网关不再直连
     CourseQueryAssistant / FacilityQueryAssistant，也不直接处理天气/推荐。
 
     on_progress: 可选回调，逐条接收 orchestrator 上报的阶段（dict：stage/label/ts）。
+    on_output:   可选回调，逐段接收 orchestrator 流式上抛的最终回答 token（str）。
     """
     start = time.perf_counter()
     status = "error"
@@ -301,12 +302,13 @@ async def call_orchestrator(query: str, conversation_history: str, on_progress=N
         task = Task(id="task-" + str(uuid.uuid4()), message=message_dict)
 
         with span("a2a_call_orchestrator", {"agent_name": "OrchestratorAgent"}):
-            # 后台阻塞等最终结果 + 前台轮询 orchestrator 进度端点
+            # 后台阻塞等最终结果 + 前台轮询 orchestrator 进度端点（含输出流）
             raw_response = await await_task_with_progress(
                 agent.send_task_async(task),
                 conf.orchestrator_url,
                 trace_id,
                 on_progress=on_progress,
+                on_output=on_output,
             )
             state = raw_response.status.state.value  # TaskState(str,Enum) → "completed"/"input-required"/"failed"
             logger.info(f"OrchestratorAgent 响应状态: {state}")
@@ -340,24 +342,40 @@ async def process_query_stream(query: str, session_id: str):
         yield greeting, True, None
         return
 
-    # 交给 OrchestratorAgent：后台等最终结果 + 前台轮询进度（经 queue 实时上抛）
+    # 交给 OrchestratorAgent：后台等最终结果 + 前台轮询进度/输出（经 queue 实时上抛）
     progress_queue: asyncio.Queue = asyncio.Queue()
+    output_queue: asyncio.Queue = asyncio.Queue()
 
     def _on_progress(stage: dict):
         progress_queue.put_nowait(stage)
 
+    def _on_output(chunk: str):
+        output_queue.put_nowait(chunk)
+
     orch_task = asyncio.create_task(
-        call_orchestrator(query, history_text, on_progress=_on_progress)
+        call_orchestrator(query, history_text, on_progress=_on_progress, on_output=_on_output)
     )
 
     stages = []
+    streamed = ""
     while not orch_task.done():
+        drained = False
         try:
             stage = progress_queue.get_nowait()
             stages.append(stage)
             yield "", False, {"progress": stage}
+            drained = True
         except asyncio.QueueEmpty:
-            await asyncio.sleep(0.2)
+            pass
+        try:
+            chunk = output_queue.get_nowait()
+            streamed += chunk
+            yield "", False, {"output": chunk}
+            drained = True
+        except asyncio.QueueEmpty:
+            pass
+        if not drained:
+            await asyncio.sleep(0.05)
 
     try:
         result = await orch_task
@@ -367,7 +385,8 @@ async def process_query_stream(query: str, session_id: str):
 
     # 记录助手回复
     await asyncio.to_thread(mem.save, session_id, "assistant", result.text)
-    yield result.text, True, {"needs_input": result.needs_input, "stages": stages}
+    # 若已流式输出正文，则带上 streamed 标记，避免 WebSocket 侧重复下发最终全文
+    yield result.text, True, {"needs_input": result.needs_input, "stages": stages, "streamed": bool(streamed)}
 
 
 # ============ API 路由 ============
@@ -462,7 +481,6 @@ async def stream_api(websocket: WebSocket):
             await websocket.send_json({"type": "start", "session_id": session_id})
 
             # 流式处理（带 trace span）
-            accumulated = ""
             needs_input = False
             with span("websocket_query", {"query": query[:100]}):
                 async for token, is_complete, meta in process_query_stream(query, session_id):
@@ -473,22 +491,29 @@ async def stream_api(websocket: WebSocket):
                             "stage": meta["progress"],
                             "session_id": session_id,
                         })
+                    elif meta and meta.get("output"):
+                        # 真实 token 流（LLM 逐 token 上抛，无人工打字延迟）
+                        await websocket.send_json({
+                            "type": "token",
+                            "token": meta["output"],
+                            "session_id": session_id,
+                        })
                     elif meta and meta.get("needs_input"):
                         # 追问：直接上抛 input_required 事件（不逐字符打字）
                         needs_input = True
-                        accumulated = token
                         await websocket.send_json({
                             "type": "input_required",
                             "message": token,
                             "session_id": session_id,
                         })
                     else:
-                        # 逐字符流式输出（模拟打字效果）
-                        new_chars = token[len(accumulated):]
-                        for char in new_chars:
-                            await websocket.send_json({"type": "token", "token": char, "session_id": session_id})
-                            await asyncio.sleep(0.02)  # 打字速度
-                        accumulated += new_chars
+                        # 最终完整结果；若已流式输出过则跳过（避免重复下发）
+                        if not (meta and meta.get("streamed")) and token:
+                            await websocket.send_json({
+                                "type": "token",
+                                "token": token,
+                                "session_id": session_id,
+                            })
 
             # 发送结束信号
             await websocket.send_json({

@@ -141,33 +141,22 @@ class SmartCampusPrompts:
 对话：{conversation}
 """)
 
-    # 定义日程规划冲突判断提示模板
+    # 定义日程规划综合合成提示模板（冲突检测 + 合成合并为一次调用）
     @staticmethod
-    def planning_conflict_prompt():
+    def planning_synthesize_prompt():
         return ChatPromptTemplate.from_template(
 """
-系统提示：你是CUHK日程规划专家。基于用户日程目标与各 specialist 返回结果，检测时间/地点冲突。
-关注：课程下课时间 vs 下一活动开始、图书馆闭馆 vs 计划停留、末班校巴 vs 返程、地点距离等。
-若存在冲突，明确指出冲突点并给替代建议；若无冲突，回复"无冲突"。保持中文，100-200字。
+系统提示：你是CUHK日程规划专家。基于子任务查询结果，检测时间/地点冲突并直接输出一份有时间顺序、清晰的日程。
+冲突关注点：课程下课时间 vs 下一活动开始、图书馆闭馆 vs 计划停留、末班校巴 vs 返程、地点距离等。
+要求：
+- 按时间先后排列事项并标注关键时间点。
+- 若存在冲突，在对应事项标注 ⚠️ 冲突并给替代建议；无冲突则不标注。
+- 语气：助手式，如"为你规划的日程如下..."。
+- 保持中文，150-300字。
 
 对话：{conversation}
 子任务：{subtasks}
 查询结果：{results}
-""")
-
-    # 定义日程规划合成提示模板
-    @staticmethod
-    def planning_compose_prompt():
-        return ChatPromptTemplate.from_template(
-"""
-系统提示：你是CUHK日程规划专家。基于子任务结果与冲突判断，输出一份有时间顺序、清晰的日程。
-要求：按时间先后排列事项并标注关键时间点；若有冲突，在对应事项标注 ⚠️ 冲突及建议。
-语气：助手式，如"为你规划的日程如下..."。保持中文，150-300字。
-
-对话：{conversation}
-子任务：{subtasks}
-查询结果：{results}
-冲突判断：{conflicts}
 """)
 
 

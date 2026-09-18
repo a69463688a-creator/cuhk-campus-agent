@@ -23,6 +23,7 @@ A2A 双角色：
 """
 import json
 import asyncio
+import functools
 import time
 import re
 import uuid
@@ -30,7 +31,7 @@ from datetime import datetime
 
 import pytz
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 from python_a2a import (
     A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState,
     AgentNetwork, Message, TextContent, MessageRole, Task,
@@ -53,6 +54,7 @@ from app.observability import (
 conf = Config()
 TZ = pytz.timezone('Asia/Shanghai')
 llm = create_llm()
+streaming_llm = create_llm(streaming=True)  # 仅单意图 summarize 用 token 级流式
 
 # ============ 意图 → Agent 映射（自 config.py 迁移） ============
 INTENT_AGENT_MAP = {
@@ -81,25 +83,33 @@ agent_network.add("PlannerAgent", AGENT_URLS["PlannerAgent"])
 
 
 # ============ 意图识别 ============
+@functools.lru_cache(maxsize=128)
+def _intent_llm_raw(conversation_history: str, query: str, current_date: str) -> str:
+    """意图识别 LLM 原始输出（进程内 LRU 缓存，命中则不再调 LLM）。"""
+    chain = SmartCampusPrompts.intent_prompt() | llm
+    return chain.invoke({
+        "conversation_history": conversation_history,
+        "query": query,
+        "current_date": current_date,
+    }).content.strip()
+
+
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    wait=wait_fixed(0.5),
     retry=retry_if_exception_type((Exception,)),
     before_sleep=lambda retry_state: logger.warning(
         f"LLM 意图识别重试 {retry_state.attempt_number}/3..."
     )
 )
 async def recognize_intent(user_input: str, conversation_history: str) -> tuple:
-    """调用 LLM 进行多意图识别（异步），自动重试最多 3 次"""
-    chain = SmartCampusPrompts.intent_prompt() | llm
+    """调用 LLM 进行多意图识别（异步），自动重试最多 3 次；命中缓存则不调 LLM。"""
     current_date = datetime.now(TZ).strftime('%Y-%m-%d')
 
     with span("llm_recognize_intent"):
-        intent_response = (await chain.ainvoke({
-            "conversation_history": conversation_history,
-            "query": user_input,
-            "current_date": current_date
-        })).content.strip()
+        intent_response = await asyncio.to_thread(
+            _intent_llm_raw, conversation_history, user_input, current_date
+        )
 
         intent_response = re.sub(r'^```json\s*|\s*```$', '', intent_response).strip()
         logger.info(f"意图识别: {intent_response}")
@@ -172,14 +182,18 @@ def format_weather_for_prompt(data: dict) -> str:
 # ============ Specialist Agent 委派 ============
 @retry(
     stop=stop_after_attempt(2),
-    wait=wait_exponential(multiplier=1, min=1, max=4),
+    wait=wait_fixed(0.5),
     retry=retry_if_exception_type((Exception,)),
     before_sleep=lambda retry_state: logger.warning(
         f"Specialist Agent 调用重试 {retry_state.attempt_number}/2..."
     )
 )
-async def call_agent(agent_name: str, query_str: str, conversation_history: str) -> AgentResult:
-    """委派 specialist agent 并返回结构化结果（区分结果 / 追问，自动重试最多 2 次）"""
+async def call_agent(agent_name: str, query_str: str, conversation_history: str, forward_output: bool = False) -> AgentResult:
+    """委派 specialist agent 并返回结构化结果（区分结果 / 追问，自动重试最多 2 次）。
+
+    forward_output=True 时把下游（planner）流式上抛的输出增量转发到 orchestrator
+    本进程 progress_store，供 web 轮询读取；仅单意图时开启。
+    """
     start = time.perf_counter()
     status = "error"
     try:
@@ -196,6 +210,10 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
             # specialist/planner 阶段转发到 orchestrator 本进程 progress_store（同一 trace_id）
             progress_store.record(trace_id, stage.get("stage", ""), f"[{agent_name}] {stage.get('label', '')}")
 
+        def _on_output(chunk: str):
+            # planner 的 token 流转发到 orchestrator 本进程 progress_store
+            progress_store.append_output(trace_id, chunk)
+
         with span("a2a_call_agent", {"agent_name": agent_name}):
             # 后台阻塞等最终结果 + 前台轮询下游进度端点
             raw_response = await await_task_with_progress(
@@ -203,6 +221,7 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
                 AGENT_URLS[agent_name],
                 trace_id,
                 on_progress=_on_progress,
+                on_output=(_on_output if forward_output else None),
             )
             state = raw_response.status.state.value  # TaskState(str,Enum) → "completed"/"input-required"/"failed"
             logger.info(f"{agent_name} 响应状态: {state}")
@@ -219,18 +238,36 @@ async def call_agent(agent_name: str, query_str: str, conversation_history: str)
         a2a_agent_call_duration_seconds.labels(agent_name=agent_name).observe(elapsed)
 
 
-async def summarize_response(agent_name: str, query_str: str, agent_result: str) -> str:
-    """用 LLM 总结 specialist agent 返回的原始数据（异步）"""
+async def summarize_response(agent_name: str, query_str: str, agent_result: str, stream_output: bool = False) -> str:
+    """用 LLM 总结 specialist agent 返回的原始数据（异步，可选 token 级流式）。
+
+    stream_output=True 时用 streaming_llm + astream 逐 token 上抛（写入本进程
+    progress_store 的 output）；否则走同步 ainvoke。仅单意图时开启，避免多意图
+    并行 summarize 的输出互相交叠。
+    """
     if agent_name == "CourseQueryAssistant":
-        chain = SmartCampusPrompts.summarize_course_prompt() | llm
+        prompt = SmartCampusPrompts.summarize_course_prompt()
     elif agent_name == "FacilityQueryAssistant":
-        chain = SmartCampusPrompts.summarize_facility_prompt() | llm
+        prompt = SmartCampusPrompts.summarize_facility_prompt()
     elif agent_name == "TransportQueryAssistant":
-        chain = SmartCampusPrompts.summarize_transport_prompt() | llm
+        prompt = SmartCampusPrompts.summarize_transport_prompt()
     else:
         return agent_result
 
-    return (await chain.ainvoke({"query": query_str, "raw_response": agent_result})).content.strip()
+    payload = {"query": query_str, "raw_response": agent_result}
+    if stream_output:
+        chain = prompt | streaming_llm
+        parts = []
+        async for chunk in chain.astream(payload):
+            piece = chunk.content
+            if piece:
+                piece = piece if isinstance(piece, str) else str(piece)
+                parts.append(piece)
+                progress_store.append_output(get_trace_id(), piece)
+        return "".join(parts).strip()
+
+    chain = prompt | llm
+    return (await chain.ainvoke(payload)).content.strip()
 
 
 # ============ Agent 卡片 ============
@@ -275,7 +312,7 @@ class OrchestratorServer(A2AServer):
                 pass
         return text, ""
 
-    async def _process_one(self, intent: str, user_queries: dict, query: str, history: str) -> AgentResult:
+    async def _process_one(self, intent: str, user_queries: dict, query: str, history: str, stream_output: bool = False) -> AgentResult:
         """处理单个意图，永不抛异常（返回结构化结果，区分结果 / 追问）。"""
         try:
             if intent == "weather":
@@ -296,11 +333,11 @@ class OrchestratorServer(A2AServer):
                 agent_name = INTENT_AGENT_MAP[intent]
                 query_str = user_queries.get(intent, query)
                 logger.info(f"路由意图 '{intent}' -> {agent_name}，查询: {query_str}")
-                result = await call_agent(agent_name, query_str, history)
+                result = await call_agent(agent_name, query_str, history, forward_output=stream_output)
                 if result.needs_input:
                     # 追问：不做 summarize，原样上抛，由上层决定追问用户
                     return result
-                return AgentResult("completed", await summarize_response(agent_name, query_str, result.text))
+                return AgentResult("completed", await summarize_response(agent_name, query_str, result.text, stream_output))
 
             else:
                 return AgentResult("completed", f"暂不支持「{intent}」类型的查询。")
@@ -325,8 +362,10 @@ class OrchestratorServer(A2AServer):
                 return AgentResult("completed", follow_up_message)
 
             progress_store.record(trace_id, STAGE_DELEGATE, "并行委派查询…")
+            # 仅单意图开启 token 级流式（多意图并行 summarize 输出会互相交叠）
+            stream_output = (len(intents) == 1)
             responses = await asyncio.gather(
-                *[self._process_one(intent, user_queries, query, history) for intent in intents]
+                *[self._process_one(intent, user_queries, query, history, stream_output=stream_output) for intent in intents]
             )
             if not responses:
                 return AgentResult("completed", "抱歉，没有找到相关信息。")

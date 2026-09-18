@@ -4,6 +4,41 @@ All notable changes to SmartCampus — CUHK 校园生活助手.
 
 ---
 
+## [v3.10.0] — 2026-09-18
+
+### 🚀 全链路延迟优化（token 级流式 + 上游提速）
+
+上一期 v3.9.0 补齐「阶段级进度」后，实测发现**最终合成/summarize 只占全链路
+0.3~1.5s，瓶颈全在上游**（意图识别、SQL 生成、记忆召回、DeepSeek 429 退避）。
+本期分两步：先把最终输出改成 token 级流式（消除感知等待），再治理上游
+（限流、缓存、记忆召回、实体归一化）。详见 `docs/specs/llm-latency-optimization.md`
+与 `docs/specs/upstream-latency-optimization.md`。
+
+#### 新增（Added）
+- `app/llm.py` — `create_llm` 增加 `streaming`（token 级流式）、`max_retries=1`（减少 SDK 内部重试）、`model`（可覆盖模型）三个可选参数
+- `app/progress.py` — `ProgressStore` 增加 `append_output` / `get_output` 累积 token 输出；`/progress/<trace_id>` 端点返回 `output`；`await_task_with_progress` 增加 `on_output` 回调；`fetch_progress` 返回 `(stages, output)`
+- `agents/course_agent.py` — `_sql_llm_by_code` 按课程代码归一化缓存（`functools.lru_cache`），同课程不同表述命中同一缓存条目
+- `agents/transport_agent.py` — `_transport_llm_by_code` 按路线号归一化缓存（带「班次关键词 + 非路线规划」守卫）
+- `agents/orchestrator_agent.py` — `_intent_llm_raw` 意图识别结果缓存
+
+#### 变更（Changed）
+- `agents/orchestrator_agent.py` / `planner_agent.py` — 最终 summarize / 合成改用 `streaming_llm + astream` 逐 token 上抛；`@retry` 退避 `wait_exponential` → `wait_fixed(0.5)`
+- `agents/course_agent.py` / `facility_agent.py` — SQL 生成接入 `_sql_llm_raw` 进程内缓存
+- `app/server.py` — `call_orchestrator` 退避 `wait_exponential` → `wait_fixed(0.5)`；`process_query_stream` 上抛 `token` 事件
+- `app/prompts.py` — `planning_conflict_prompt` + `planning_compose_prompt` 合并为 `planning_synthesize_prompt`（冲突检测 + 合成一次调用，planning 从 7 次降为 6 次）
+- `app/memory.py` — 语义召回快速路径（无长期记忆时跳过 embed）+ `_cosine_topk` 复用预载记忆 + `_ensure_connection` 改用 `ping(reconnect=True)` 静默重连
+- `static/index.html` — 直接走 WebSocket 流式渲染 token / 阶段 / 追问；流式气泡为空时清理；网络错误统一提示 + 重试按钮
+
+#### 测试（Tested）
+- `test/e2e_verify.py` — 增加 token 流式 / 首 token 延迟 / 总耗时测量口径
+- `test/test_streaming_feedback.py` — 反问语义 / 进度轮询 / 降级 / TaskState 规范字符串回归
+- 端到端验证：限流治理（日志 `Retrying` 计数 0）、SQL 缓存命中（run1/run2 同时间戳无 deepseek POST）、记忆召回无 `MySQL 连接已断开` 告警
+
+#### 已知边界（Known Limits）
+- ≤12s / ≤35s 目标未达成：单意图 13.4s、planning 50.7~61.6s，瓶颈为 **DeepSeek API 单次调用 3~23s 的固有延迟**，代码层已无杠杆（缓存只覆盖意图/SQL，summarize 与拆解/合成每轮仍需调 LLM）。后续方向：减少 LLM 调用次数或响应级缓存，需另立 spec。
+
+---
+
 ## [v3.9.0] — 2026-09-17
 
 ### 🔄 A2A 流式中间反馈 + 反问闭环

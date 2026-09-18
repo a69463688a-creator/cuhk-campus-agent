@@ -19,7 +19,7 @@ import time
 import re
 import uuid
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 from python_a2a import (
     A2AServer, run_server, AgentCard, AgentSkill, TaskStatus, TaskState,
     AgentNetwork, Message, TextContent, MessageRole, Task,
@@ -32,7 +32,7 @@ from app.prompts import SmartCampusPrompts
 from app.a2a_types import AgentResult, status_message_text
 from app.progress import (
     progress_store, register_progress_endpoint, await_task_with_progress,
-    STAGE_DECOMPOSE, STAGE_DELEGATE, STAGE_CONFLICT, STAGE_COMPOSE,
+    STAGE_DECOMPOSE, STAGE_DELEGATE, STAGE_COMPOSE,
 )
 from app.observability import (
     span, set_trace_id, get_trace_id,
@@ -42,6 +42,10 @@ from app.observability import (
 
 conf = Config()
 llm = create_llm()
+streaming_llm = create_llm(streaming=True)  # 仅最终合成 LLM 用 token 级流式
+
+# 并行委派 specialist 的并发上限：避免 3 个 SQL LLM 同时打 DeepSeek 触发 429 退避
+_delegate_semaphore = asyncio.Semaphore(2)
 
 # 子任务 intent → specialist agent（与 orchestrator 的 INTENT_AGENT_MAP 对齐，但不含 planner 自身）
 PLANNER_SPECIALISTS = {
@@ -71,7 +75,7 @@ def _strip_json(s: str) -> str:
 # ============ 第一步：拆解 ============
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    wait=wait_fixed(0.5),
     retry=retry_if_exception_type((Exception,)),
     before_sleep=lambda rs: logger.warning(f"LLM 拆解重试 {rs.attempt_number}/3..."),
 )
@@ -93,41 +97,36 @@ async def decompose_goal(conversation: str) -> list:
         agent_llm_calls_total.labels(agent_name="PlannerAgent", status=status).inc()
 
 
-# ============ 第三步：冲突判断 ============
-async def detect_conflicts(conversation: str, subtasks: list, results: list) -> str:
-    chain = SmartCampusPrompts.planning_conflict_prompt() | llm
+# ============ 第三+四步（合并）：冲突检测 + 合成日程 ============
+async def synthesize_schedule(conversation: str, subtasks: list, results: list, trace_id: str) -> str:
+    """把「冲突检测 + 合成日程」合并为一次 LLM 调用，并逐 token 流式上抛。
+
+    用 streaming_llm + astream，每段增量写入本进程 progress_store 的 output（以
+    trace_id 关联），供上层轮询读取；最终返回完整文本作为 artifact。
+    """
+    chain = SmartCampusPrompts.planning_synthesize_prompt() | streaming_llm
     start = time.perf_counter()
-    with span("llm_planning_conflict"):
-        out = (await chain.ainvoke({
+    parts = []
+    with span("llm_planning_synthesize"):
+        async for chunk in chain.astream({
             "conversation": conversation,
             "subtasks": json.dumps(subtasks, ensure_ascii=False),
             "results": json.dumps(results, ensure_ascii=False),
-        })).content.strip()
+        }):
+            piece = chunk.content
+            if piece:
+                piece = piece if isinstance(piece, str) else str(piece)
+                parts.append(piece)
+                progress_store.append_output(trace_id, piece)
     agent_llm_duration_seconds.labels(agent_name="PlannerAgent").observe(time.perf_counter() - start)
     agent_llm_calls_total.labels(agent_name="PlannerAgent", status="ok").inc()
-    return out
-
-
-# ============ 第四步：合成日程 ============
-async def compose_schedule(conversation: str, subtasks: list, results: list, conflicts: str) -> str:
-    chain = SmartCampusPrompts.planning_compose_prompt() | llm
-    start = time.perf_counter()
-    with span("llm_planning_compose"):
-        out = (await chain.ainvoke({
-            "conversation": conversation,
-            "subtasks": json.dumps(subtasks, ensure_ascii=False),
-            "results": json.dumps(results, ensure_ascii=False),
-            "conflicts": conflicts,
-        })).content.strip()
-    agent_llm_duration_seconds.labels(agent_name="PlannerAgent").observe(time.perf_counter() - start)
-    agent_llm_calls_total.labels(agent_name="PlannerAgent", status="ok").inc()
-    return out
+    return "".join(parts).strip()
 
 
 # ============ Specialist 委派 ============
 @retry(
     stop=stop_after_attempt(2),
-    wait=wait_exponential(multiplier=1, min=1, max=4),
+    wait=wait_fixed(0.5),
     retry=retry_if_exception_type((Exception,)),
     before_sleep=lambda rs: logger.warning(f"Specialist 委派重试 {rs.attempt_number}/2..."),
 )
@@ -198,13 +197,14 @@ class PlannerServer(A2AServer):
         register_progress_endpoint(app, self)
 
     async def _delegate_one(self, subtask: dict) -> AgentResult:
-        """委派单个子任务到对应 specialist。"""
+        """委派单个子任务到对应 specialist（并发上限防 429）。"""
         intent = subtask.get("intent", "")
         description = subtask.get("description", "")
         agent_name = PLANNER_SPECIALISTS.get(intent)
         if not agent_name:
             return AgentResult("failed", f"（未映射到 specialist：{intent}）")
-        return await call_agent(agent_name, description)
+        async with _delegate_semaphore:
+            return await call_agent(agent_name, description)
 
     async def _plan(self, conversation: str) -> str:
         """四步规划主流程：拆解 → 并行委派 → 冲突判断 → 合成。"""
@@ -231,10 +231,8 @@ class PlannerServer(A2AServer):
                 else:
                     results.append({"description": t.get("description", ""), "intent": t.get("intent", ""), "result": r.text})
 
-            progress_store.record(trace_id, STAGE_CONFLICT, "检测时间/地点冲突…")
-            conflicts = await detect_conflicts(conversation, subtasks, results)
-            progress_store.record(trace_id, STAGE_COMPOSE, "合成日程…")
-            return await compose_schedule(conversation, subtasks, results, conflicts)
+            progress_store.record(trace_id, STAGE_COMPOSE, "综合合成日程（含冲突检测）…")
+            return await synthesize_schedule(conversation, subtasks, results, trace_id)
 
     def handle_task(self, task):
         # 从 A2A 消息提取 trace_id，实现跨进程链路关联（与 specialist 对称）
